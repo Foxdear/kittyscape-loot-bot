@@ -6,6 +6,7 @@ pub struct Config {
     pub mod_channel_id: ChannelId,
     pub log_channel_id: ChannelId,
     pub runelite_channel_id: Option<ChannelId>,
+    pub rank_request_channel_id: Option<ChannelId>,
 }
 
 impl Config {
@@ -29,10 +30,20 @@ impl Config {
             Err(_) => None
         };
 
+        // Optional Rank Request channel ID
+        let rank_request_channel_id = match env::var("RANK_REQUEST_CHANNEL_ID") {
+            Ok(id) => match id.parse::<u64>() {
+                Ok(id) => Some(ChannelId::new(id)),
+                Err(_) => None
+            },
+            Err(_) => None
+        };
+
         Ok(Self {
             mod_channel_id: ChannelId::new(mod_channel_id),
             log_channel_id: ChannelId::new(log_channel_id),
             runelite_channel_id,
+            rank_request_channel_id,
         })
     }
 }
