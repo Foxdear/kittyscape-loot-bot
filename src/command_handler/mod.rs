@@ -1,12 +1,5 @@
 use anyhow::Result;use serenity::all::{
-    Command,
-    CommandOptionType,
-    Interaction,
-    CreateCommand,
-    CreateCommandOption,
-    CreateInteractionResponse,
-    CreateAutocompleteResponse,
-    AutocompleteChoice,
+    AutocompleteChoice, Command, CommandOptionType, CreateAutocompleteResponse, CreateCommand, CreateCommandOption, CreateInteractionResponse, Interaction, Permissions
 };
 use serenity::prelude::*;
 use sqlx::SqlitePool;
@@ -111,6 +104,13 @@ pub async fn register_commands(ctx: &Context) -> Result<()> {
         .description("List all RuneScape accounts linked to your Discord account"))
     .await?;
 
+    let admin_permission_set = Permissions::ADMINISTRATOR;
+
+    Command::create_global_command(&ctx.http, CreateCommand::new("recalculate")
+        .description("ADMIN: Recalculate all points based on clamped categories.")
+        .default_member_permissions(admin_permission_set))
+    .await?;
+
     Ok(())
 }
 
@@ -128,6 +128,7 @@ pub async fn handle_interaction(ctx: &Context, interaction: &Interaction, db: &S
                 "rsname" => handle_rsname(command, ctx, db).await?,
                 "rsname_remove" => handle_rsname_remove(command, ctx, db).await?,
                 "rsnames" => handle_rsnames(command, ctx, db).await?,
+                "recalculate" => handle_recalculate(command, ctx, db).await?,
                 _ => {
                     error!("Unknown command: {}", command.data.name);
                 }

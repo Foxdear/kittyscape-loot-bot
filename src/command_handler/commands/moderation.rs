@@ -1,0 +1,194 @@
+use std::collections::HashMap;
+use std::ops::Index;
+
+use anyhow::Result;
+use serenity::all::{
+    CommandInteraction,
+    CreateInteractionResponse,
+    CreateInteractionResponseMessage,
+};
+use sqlx::SqlitePool;
+use warp::filters::body::form;
+use crate::command_handler::CollectionLogManagerKey;
+use crate::config::Config;
+use crate::config::ConfigKey;
+use crate::rank_manager;
+use crate::runescape_tracker;
+use crate::logger;
+use crate::runescape_tracker::RunescapeTrackerKey;
+use sqlx::{QueryBuilder, Sqlite};
+use tracing::{error, info, debug};
+
+pub struct ItemData {
+    item_id: i64,
+    item_name: String,
+    percentage: f64,
+    clamp: bool,
+    old_points: i64,
+    points: i64,
+    affected: i64,
+}
+
+#[derive(sqlx::FromRow)]
+pub struct ClogRow {
+    id: i64,
+    discord_id: String,
+    points: i64,
+    item_name: String,
+}
+
+pub struct PlayerStats {
+    change: i64,
+    name: String,
+}
+
+pub async fn handle_recalculate( //Big red button
+    command: &CommandInteraction,
+    ctx: &serenity::prelude::Context,
+    db: &SqlitePool,
+) -> Result<()> {
+    let data = ctx.data.read().await;
+    //This query assumes:
+    //Item should have a non-zero amount of clogs for us to care about it
+    //Clamps may have been removed or added, and we want to fix any problem clogs
+    //Whitelists may have been removed or added, same reason
+    //Only low completion percentage clogs are an issue, so we check all those (a clamp may have been removed instead of adding to whitelist)
+    let item_records = sqlx::query!(
+        "SELECT * from v_item_data
+        WHERE clog_count > 0 AND ((clamp = 1 AND highest_points > 3000)
+        OR whitelist = 1 OR percentage < 10)
+        GROUP BY item_name ORDER BY percentage" //Until we work off item_id we gotta take care of dupes. Assume it's the most acquired one
+    )
+    .fetch_all(db)
+    .await?;
+
+    let mut item_vector: Vec<ItemData>;
+
+    let clog_manager = data.get::<CollectionLogManagerKey>().unwrap();
+    let rs_manager = data.get::<RunescapeTrackerKey>().unwrap();
+
+    let mut clog_query: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "SELECT * FROM collection_log_entries WHERE item_name IN (",
+    );
+
+    let mut clog_query_separated = clog_query.separated(", ");
+    for (i, record) in item_records.iter().enumerate() {
+
+        clog_query_separated.push(format!("\"{}\"", record.item_name.clone().unwrap()));
+
+        let old_points: i64 = record.highest_points.unwrap();
+        item_vector.push(ItemData {
+            item_id: record.item_id,
+            item_name: record.item_name.clone().unwrap(),
+            percentage: record.percentage.clone().unwrap().parse::<f64>().unwrap(),
+            clamp: if record.clamp == 1 && record.whitelist == Some(0) { true } else { false },
+            old_points: old_points,
+            points: clog_manager.calculate_points(record.item_name.unwrap().as_str()).await.unwrap(),
+            affected: 0,
+        }); 
+    }
+    clog_query_separated.push_unseparated(")");
+
+    let clog_records: Vec<ClogRow> = clog_query.build_query_as::<ClogRow>()
+    .fetch_all(db)
+    .await?;
+
+    if clog_records.len() > 0 {
+
+        let mut clog_update_query: QueryBuilder<Sqlite> = QueryBuilder::new(
+            "REPLACE collection_log_entries (id, points) VALUES ",
+        );
+
+        let mut clog_update_query_separated = clog_update_query.separated(", ");
+
+        let mut affected_players = HashMap::new();
+
+        for (i, row) in clog_records.into_iter().enumerate() {
+            let target_item = item_vector.iter().position(|item| item.item_name == row.item_name).unwrap();
+
+            let point_delta = item_vector[target_item].points - row.points; //Positive if new number bigger, negative otherwise
+
+            //Only lower points if we're clamping it. We don't want to lower points if we don't have to
+            if ((point_delta.is_negative()) && item_vector[target_item].clamp) || ((point_delta.is_positive()) && !item_vector[target_item].clamp) {
+
+                if !affected_players.contains_key(&row.discord_id) { //Initialize
+                    affected_players.insert(row.discord_id, PlayerStats {
+                        change: 0,
+                        name: rs_manager.get_username_from_discord_id(ctx, row.discord_id.as_str()).await?,
+                    });
+                }
+
+                affected_players.entry(row.discord_id).and_modify(|player_stat| player_stat.change += point_delta);
+
+                clog_update_query_separated.push(format!("('{}', '{}')", row.id, item_vector[target_item].points));
+
+                item_vector[target_item].affected += 1;
+            }
+            
+        }
+        clog_update_query_separated.push_unseparated(")");
+
+        let mut info_readout = format!("**Recalculation Results** (only highest points previously awarded listed):");
+
+        for (i, data) in item_vector.into_iter().enumerate() {
+            let point_delta = data.points - data.old_points;
+            info_readout += format!("\n**{}** ({}): from {} to {} points (**{}{}**), {} clogs affected",
+                data.item_name,
+                data.item_id,
+                data.old_points,
+                data.points,
+                if point_delta.is_positive() {"+"} else {""},
+                point_delta,
+                data.affected).as_str();
+        }
+
+        info_readout += "\n**Affected users:**";
+
+        for (i, affected) in affected_players.into_iter().enumerate() {
+            info_readout += format!("\n**{}** ({}): **{}{}** points",
+            affected.1.name,
+            affected.0,
+            if affected.1.change.is_positive() {"+"} else {""},
+            affected.1.change,
+            ).as_str();
+        }
+
+        clog_update_query.build()
+        .execute(db)
+        .await;
+        for (i, player) in affected_players.into_iter().enumerate() {
+            rank_manager::add_points(ctx, player.0.as_str(), &player.1.name, player.1.change, db);
+        }
+        let commanding_officer_id = command.user.id.to_string();
+        logger::log_action(ctx, &commanding_officer_id, "recalculate", &info_readout);
+        
+    } else {
+        command
+                .create_response(&ctx.http, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("Nothing to report, sheriff!")
+                ))
+                .await?;
+    }
+    Ok(())
+}
+
+// async fn is_allowed( //I wrote this and then found out you can specify required perms
+//     command: &CommandInteraction,
+//     ctx: &serenity::prelude::Context,
+// ) -> Result<bool> {
+//     let config = Config::from_env()?;
+//     let admin_role = config.admin_role_id;
+//     let allowed = command.member.unwrap().roles.contains(&admin_role.unwrap());
+
+//     if !allowed {
+//         command
+//                 .create_response(&ctx.http, CreateInteractionResponse::Message(
+//                     CreateInteractionResponseMessage::new()
+//                         .content("Sorry kitten, you're not allowed to do that.")
+//                 ))
+//                 .await?;
+//     }
+
+//     Ok(allowed)
+// }
