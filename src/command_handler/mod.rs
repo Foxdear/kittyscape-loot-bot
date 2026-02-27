@@ -111,6 +111,54 @@ pub async fn register_commands(ctx: &Context) -> Result<()> {
         .default_member_permissions(admin_permission_set))
     .await?;
 
+    Command::create_global_command(&ctx.http, CreateCommand::new("clamp")
+        .description("ADMIN: Clamp the points a category is allowed to give.")
+        .default_member_permissions(admin_permission_set)
+        .add_option(CreateCommandOption::new(
+            CommandOptionType::String,
+            "category",
+            "The name of the category"
+        )
+        .required(true)
+        .set_autocomplete(true)))
+    .await?;
+
+    Command::create_global_command(&ctx.http, CreateCommand::new("unclamp")
+        .description("ADMIN: Unclamp the points a category is allowed to give.")
+        .default_member_permissions(admin_permission_set)
+        .add_option(CreateCommandOption::new(
+            CommandOptionType::String,
+            "category",
+            "The name of the category"
+        )
+        .required(true)
+        .set_autocomplete(true)))
+    .await?;
+
+    Command::create_global_command(&ctx.http, CreateCommand::new("whitelist")
+        .description("ADMIN: Whitelist a clog item to never be clamped.")
+        .default_member_permissions(admin_permission_set)
+        .add_option(CreateCommandOption::new(
+            CommandOptionType::String,
+            "item",
+            "The name of the collection log item"
+        )
+        .required(true)
+        .set_autocomplete(true)))
+    .await?;
+
+    Command::create_global_command(&ctx.http, CreateCommand::new("unwhitelist")
+        .description("ADMIN: Unwhitelist a clog item, so it will be clamped (if the category is clamped).")
+        .default_member_permissions(admin_permission_set)
+        .add_option(CreateCommandOption::new(
+            CommandOptionType::String,
+            "item",
+            "The name of the collection log item"
+        )
+        .required(true)
+        .set_autocomplete(true)))
+    .await?;
+
     Ok(())
 }
 
@@ -129,6 +177,10 @@ pub async fn handle_interaction(ctx: &Context, interaction: &Interaction, db: &S
                 "rsname_remove" => handle_rsname_remove(command, ctx, db).await?,
                 "rsnames" => handle_rsnames(command, ctx, db).await?,
                 "recalculate" => handle_recalculate(command, ctx, db).await?,
+                "clamp" => handle_clamp(command, ctx, db, true).await?,
+                "unclamp" => handle_clamp(command, ctx, db, false).await?,
+                "whitelist" => handle_whitelist(command, ctx, db, true).await?,
+                "unwhitelist" => handle_whitelist(command, ctx, db, false).await?,
                 _ => {
                     error!("Unknown command: {}", command.data.name);
                 }
@@ -136,7 +188,7 @@ pub async fn handle_interaction(ctx: &Context, interaction: &Interaction, db: &S
         }
         Interaction::Autocomplete(autocomplete) => {
             match autocomplete.data.name.as_str() {
-                "drop" | "clog" => {
+                "drop" | "clog" | "whitelist" | "unwhitelist" => {
                     if let Some(option) = autocomplete.data.options.iter().find(|opt| opt.name == "item" && opt.value.as_str().is_some()) {
                         if let Some(partial) = option.value.as_str() {
                             let data = ctx.data.read().await;
@@ -225,6 +277,32 @@ pub async fn handle_interaction(ctx: &Context, interaction: &Interaction, db: &S
                                 CreateAutocompleteResponse::new().set_choices(recent_items)
                             )
                         ).await?;
+                    }
+                }
+                "clamp" | "unclamp" => {
+                    if let Some(option) = autocomplete.data.options.iter().find(|opt| opt.name == "category" && opt.value.as_str().is_some()) {
+                        if let Some(partial) = option.value.as_str() {
+                            let data = ctx.data.read().await;
+                            
+                            let suggestions = // Get collection log manager for clog suggestions
+                                if let Some(clog_manager) = data.get::<CollectionLogManagerKey>() {
+                                    clog_manager.get_category_suggestions(partial).await
+                                } else {
+                                    Vec::new()
+                                }
+                            ;
+                            
+                            let choices: Vec<AutocompleteChoice> = suggestions
+                                .into_iter()
+                                .map(|item| AutocompleteChoice::new(item.clone(), item))
+                                .collect();
+                            
+                            autocomplete.create_response(&ctx.http, 
+                                CreateInteractionResponse::Autocomplete(
+                                    CreateAutocompleteResponse::new().set_choices(choices)
+                                )
+                            ).await?;
+                        }
                     }
                 }
                 _ => {}

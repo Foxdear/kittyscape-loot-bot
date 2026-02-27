@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 use serde_json::Value;
 use html_escape::decode_html_entities;
-use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, query};
 
 const USER_AGENT: &str = "KittyScape Loot Bot/1.0";
 const WIKI_API_URL: &str = "https://oldschool.runescape.wiki/api.php";
@@ -320,5 +320,21 @@ impl CollectionLogManager<> {
             .take(25)
             .cloned()
             .collect()
+    }
+
+    pub async fn get_category_suggestions(&self, partial: &str) -> Vec<String> {
+        let partial = partial.to_lowercase();
+
+        let mut query_suggestions = vec![];
+
+        let query_results = sqlx::query!("SELECT category FROM category_table WHERE category LIKE '%' || ? || '%' LIMIT 25", partial)
+        .fetch_all(&self.db)
+        .await;
+
+        for (i, result) in query_results.unwrap().into_iter().enumerate() {
+            query_suggestions.push(result.category.unwrap());
+        }
+
+        query_suggestions
     }
 } 

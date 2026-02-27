@@ -21,3 +21,5 @@ pub use rsname::handle_rsname;
 pub use rsname_remove::handle_rsname_remove;
 pub use rsnames::handle_rsnames; 
 pub use moderation::handle_recalculate;
+pub use moderation::handle_clamp;
+pub use moderation::handle_whitelist;
