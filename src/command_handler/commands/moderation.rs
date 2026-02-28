@@ -43,6 +43,12 @@ pub async fn handle_recalculate( //Big red button
     ctx: &serenity::prelude::Context,
     db: &SqlitePool,
 ) -> Result<()> {
+    command
+        .create_response(&ctx.http, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("Recalculating...")
+        ))
+        .await?;
     let data = ctx.data.read().await;
     //This query assumes:
     //Item should have a non-zero amount of clogs for us to care about it
@@ -165,12 +171,6 @@ pub async fn handle_recalculate( //Big red button
                 clog_update_query.build()
                 .execute(db)
                 .await?;
-                command
-                    .create_response(&ctx.http, CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content("Recalculating...")
-                    ))
-                    .await?;
                 for (i, player) in affected_players.into_iter().enumerate() {
                     info_readout += format!("\n**{}** ({}): **{}{}** points",
                     player.1.name,
@@ -192,11 +192,8 @@ pub async fn handle_recalculate( //Big red button
     }
     if running_count == 0 {
         command
-                .create_response(&ctx.http, CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .content("Nothing to report, sheriff!")
-                ))
-                .await?;
+            .edit_response(&ctx.http, EditInteractionResponse::new().content("Nothing to report, sheriff!"))
+            .await?;
     }
     Ok(())
 }
