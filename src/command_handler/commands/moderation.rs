@@ -56,7 +56,7 @@ pub async fn handle_recalculate( //Big red button
     //Whitelists may have been removed or added, same reason
     //Only low completion percentage clogs are an issue, so we check all those (a clamp may have been removed instead of adding to whitelist)
     let item_records = sqlx::query!(
-        //I have to list every column to remove type inferrence issues ughhhhhhhhh
+        //I have to list every column to remove type inference issues ughhhhhhhhh
         "SELECT item_id, item_name, preferred_name, categories, percentage, highest_points as 'highest_points!: i64', whitelist, clog_count, clamp, clamped_category from v_item_data
         WHERE clog_count > 0 AND ((clamp = 1 AND highest_points > 3000)
         OR whitelist = 1 OR percentage < 10)

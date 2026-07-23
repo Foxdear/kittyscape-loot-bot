@@ -5,31 +5,61 @@ mod config;
 mod rank_manager;
 mod logger;
 mod runescape_tracker;
+mod dink_listener;
 
 use anyhow::Result;
+use axum::Extension;
+use axum::RequestExt;
+use axum::extract::DefaultBodyLimit;
+use axum::routing::post;
+use serde_json::error::Category::Data;
+use serenity::all::ChannelAction::Create;
+use serenity::all::Http;
 use serenity::all::{
-    GatewayIntents,
-    Interaction,
-    Ready,
-    Message,
+    CreateAttachment, GatewayIntents, Interaction, Message, Ready
 };
+use sqlx::Sqlite;
+use std::future::IntoFuture as _;
 use serenity::async_trait;
 use serenity::prelude::*;
+use serenity::all::CreateMessage;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use std::env;
+use std::fs::File;
 use std::sync::Arc;
 use dotenvy::dotenv;
+use axum::{
+    body::{Body, Bytes},
+    extract::{Request, Json, Query, Multipart},
+    http::{header::CONTENT_TYPE, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::get,
+    Router,
+    Form,
+};
+use serde_json::Value;
 use tracing::{error, info, debug};
 use command_handler::{PriceManagerKey, CollectionLogManagerKey};
 use config::{Config, ConfigKey};
 use runescape_tracker::RunescapeTrackerKey;
+use serde::Deserialize;
 
 struct Handler {
     db: SqlitePool,
     price_manager: Arc<prices::PriceManager>,
     collection_log_manager: Arc<collection_log::CollectionLogManager>,
     runescape_tracker: Arc<runescape_tracker::RunescapeTracker>,
+}
+
+#[derive(Clone)]
+struct DinkHandler {
+    db: SqlitePool,
+    price_manager: Arc<prices::PriceManager>,
+    collection_log_manager: Arc<collection_log::CollectionLogManager>,
+    runescape_tracker: Arc<runescape_tracker::RunescapeTracker>,
+    http: Arc<Http>,
 }
 
 #[async_trait]
@@ -117,16 +147,32 @@ async fn main() -> Result<()> {
         })
         .await?;
 
+    // build our application with a single route
+    let app = Router::new().route("/dinky", post(dink_handler).get(dink_handler))
+    .route("/", get(|| async { "Hello, World!" }))
+    .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+    .layer(Extension(DinkHandler {
+            db: db.clone(),
+            price_manager: Arc::clone(&price_manager),
+            collection_log_manager: Arc::clone(&collection_log_manager),
+            runescape_tracker: Arc::clone(&runescape_tracker),
+            http: client.http.clone(),
+        }));
+
     // Store config in client data
     {
         let mut data = client.data.write().await;
         data.insert::<ConfigKey>(config);
     }
 
-    // Start the client
-    if let Err(why) = client.start().await {
-        error!("Client error: {:?}", why);
-    }
+    // run our app with hyper, listening globally on port 3000
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let server = axum::serve(listener, app);
+
+    tokio::select! {
+        err = client.start() => tracing::warn!("Discord client quit: {err:?}"),
+        err = server.into_future() => tracing::warn!("Axum server quit: {err:?}"),
+    }  
 
     Ok(())
 } 
