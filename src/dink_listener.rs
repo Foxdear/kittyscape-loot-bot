@@ -5,6 +5,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::post;
 use serde_json::error::Category::Data;
 use serenity::all::ChannelAction::Create;
+use serenity::all::CreateEmbedAuthor;
 use serenity::all::Http;
 use serenity::all::{
     CreateAttachment, GatewayIntents, Interaction, Message, Ready
@@ -13,7 +14,7 @@ use sqlx::Sqlite;
 use std::future::IntoFuture as _;
 use serenity::async_trait;
 use serenity::prelude::*;
-use serenity::all::CreateMessage;
+use serenity::all::{CreateMessage, CreateEmbed};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use std::env;
@@ -32,10 +33,17 @@ use axum::{
 };
 use serde_json::Value;
 use tracing::{error, info, debug};
-use command_handler::{PriceManagerKey, CollectionLogManagerKey};
-use config::{Config, ConfigKey};
-use runescape_tracker::RunescapeTrackerKey;
+use crate::command_handler::{PriceManagerKey, CollectionLogManagerKey};
+use crate::config::{Config, ConfigKey};
+use crate::runescape_tracker::RunescapeTrackerKey;
+use crate::DinkHandler;
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::borrow::Borrow;
+
+
+// https://github.com/pajlads/DinkPlugin/blob/master/docs/json-examples.md
+
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -81,6 +89,7 @@ struct DinkPayload {
     account_type: String,
     seasonal_world: bool,
     dink_account_hash: String,
+    group_iron_clan_name: Option<String>,
     extra: DinkExtra,
 }
 
@@ -89,7 +98,7 @@ struct DinkFile {
     content: Bytes,
 }
 
-async fn dink_handler(dink_handler: Extension<DinkHandler>, mut multipart: Multipart) {
+pub async fn dink_handler(dink_handler: Extension<DinkHandler>, mut multipart: Multipart) {
 
     // Initialize config
     let config = Config::from_env().unwrap();
@@ -123,13 +132,31 @@ async fn dink_handler(dink_handler: Extension<DinkHandler>, mut multipart: Multi
         }
     }
 
-    //info!("Payload: {:#?}", payload_json);
+    info!("Payload: {:#?}", payload_json);
     let data: DinkPayload = serde_json::from_slice(&payload_json).unwrap();
     //info!("Type: {:#?}", data.r#type);
     let screenshot = CreateAttachment::bytes(dink_file.content, dink_file.file_name);
-    let builder = CreateMessage::new().content(data.content.unwrap()).add_file(screenshot);
+    let author = CreateEmbedAuthor::new(data.player_name);
+    if data.account_type.as_str() != "NORMAL" {
+        author.icon_url("https://oldschool.runescape.wiki/images/".to_owned() + match data.account_type.as_str() {
+            "IRONMAN" => {"Ironman_chat_badge.png"}
+            "ULTIMATE_IRONMAN" => {"Ultimate_ironman_chat_badge.png"}
+            "HARDCORE_IRONMAN" => {"Hardcore_ironman_chat_badge.png"}
+            "GROUP_IRONMAN" => {"Group_ironman_chat_badge.png"}
+            "HARDCORE_GROUP_IRONMAN" => {"Hardcore_group_ironman_chat_badge.png"}
+            "UNRANKED_GROUP_IRONMAN" => {"Unranked_group_ironman_chat_badge.png"}
+            _ => {"Cheese_detail.png"}
+        });
+    }
+    let embed = CreateEmbed::new()
+    .author(author)
+    .image(format!("attachment://{}", screenshot.filename))
+    .description("Duuuuuuude what the fuck is up")
+    .field("Love", "```fix\nWomen```", true)
+    .field("Sister", "```fix\nKisser```", true);
+    let builder = CreateMessage::new().add_embed(embed);
 
-    let _ = config.mod_channel_id.send_message(&dink_handler.http, builder).await;
+    let _ = config.mod_channel_id.send_files(&dink_handler.http, [screenshot], builder).await;
     
     let allowed_useragents = ["RuneLite/", "HDOS/"];
 }

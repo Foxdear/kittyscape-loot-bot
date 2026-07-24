@@ -148,7 +148,7 @@ async fn main() -> Result<()> {
         .await?;
 
     // build our application with a single route
-    let app = Router::new().route("/dinky", post(dink_handler).get(dink_handler))
+    let app = Router::new().route("/dinky", post(dink_listener::dink_handler).get(dink_listener::dink_handler))
     .route("/", get(|| async { "Hello, World!" }))
     .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
     .layer(Extension(DinkHandler {
