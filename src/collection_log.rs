@@ -18,14 +18,13 @@ pub struct CollectionLogData {
 }
 
 pub struct CollectionLogItem {
-    pub item_id: f64,
+    pub item_id: i64,
     pub item_name: String,
     pub preferred_name: String,
     pub percentage: f64,
     pub categories: String,
     //pub release_date: String,
 }
-
 
 pub struct CollectionLogManager<> {
     data: Arc<RwLock<CollectionLogData>>,
@@ -149,7 +148,7 @@ impl CollectionLogManager<> {
                 debug!("Processing row {}", i);
 
                 debug!("{:#?}", row.value());
-                let item_id = row.value().attr("data-item-id").unwrap().parse::<f64>().unwrap();
+                let item_id = row.value().attr("data-item-id").unwrap().parse::<i64>().unwrap();
                 
                 // Log the raw HTML of the row for debugging
                 debug!("Row HTML: {}", row.html());
@@ -267,8 +266,6 @@ impl CollectionLogManager<> {
     }
 
     pub async fn calculate_points(&self, item_name: &str) -> Option<i64> {
-        let data = self.data.read().await;
-        let completion_rate = data.completion_rates.get(item_name)?;
         let item_record = sqlx::query!(
             "SELECT * FROM v_item_data WHERE item_name LIKE '%' || ? || '%' ORDER BY item_id",
             item_name
@@ -277,8 +274,26 @@ impl CollectionLogManager<> {
         .await
         .ok()?;
         
+        Some(Self::points(item_record.percentage, item_record.whitelist, item_record.clamp).await?)
+    }
+
+    //For Dink we do this by item id instead because it's more reliable
+    pub async fn calculate_points_dink(&self, item_id: i32) -> Option<i64> {
+        let item_record = sqlx::query!(
+            "SELECT * FROM v_item_data WHERE item_id = ? ORDER BY item_id",
+            item_id
+        )
+        .fetch_one(&self.db)
+        .await
+        .ok()?;
+        
+        Some(Self::points(item_record.percentage, item_record.whitelist, item_record.clamp).await?)
+    }
+
+    pub async fn points(percentage: Option<String>, whitelist: Option<i64>, clamp: i32) -> Option<i64> {
+        let completion_rate = percentage.unwrap().parse::<f64>().unwrap();
         // Multi-tiered point calculation
-        let points = if *completion_rate <= 5.0 {
+        let points = if completion_rate <= 5.0 {
             // Tier 3: Mega-rare items (≤5%)
             // 5% -> 500 points
             // 3% -> 1000 points
@@ -288,13 +303,13 @@ impl CollectionLogManager<> {
             let rarity_multiplier = (1.0 / completion_rate).powf(1.5) * 30.0;
             //Is the item in a clamped category, and not whitelisted?
             //Only checked here because the other percentage categories are nowhere near 3k
-            if item_record.whitelist == Some(0) && item_record.clamp > 0 {
+            if whitelist == Some(0) && clamp > 0 {
                 (base * rarity_multiplier).clamp(0.0, 3000.0)
             }
             else {
                 base * rarity_multiplier
             }
-        } else if *completion_rate <= 20.0 {
+        } else if completion_rate <= 20.0 {
             // Tier 2: Moderately rare items (5-20%)
             // Linear interpolation between:
             // 20% -> 200 points

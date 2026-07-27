@@ -1,6 +1,6 @@
 use std::env;
 use serenity::all::RoleId;
-use serenity::model::id::ChannelId;
+use serenity::model::id::{ChannelId, GuildId};
 use serenity::prelude::TypeMapKey;
 
 pub struct Config {
@@ -8,6 +8,7 @@ pub struct Config {
     pub log_channel_id: ChannelId,
     pub runelite_channel_id: Option<ChannelId>,
     pub rank_request_channel_id: Option<ChannelId>,
+    pub guild_id: GuildId
 }
 
 impl Config {
@@ -21,6 +22,10 @@ impl Config {
             Ok(id) => id.parse::<u64>().unwrap_or(mod_channel_id),
             Err(_) => mod_channel_id
         };
+
+        let guild_id = env::var("GUILD_ID")?
+            .parse::<u64>()
+            .map_err(|_| env::VarError::NotPresent)?;
         
         // Optional RuneLite channel ID
         let runelite_channel_id = match env::var("RUNELITE_CHANNEL_ID") {
@@ -45,6 +50,7 @@ impl Config {
             log_channel_id: ChannelId::new(log_channel_id),
             runelite_channel_id,
             rank_request_channel_id,
+            guild_id: GuildId::new(guild_id)
         })
     }
 }

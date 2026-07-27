@@ -16,7 +16,7 @@ use serde_json::error::Category::Data;
 use serenity::all::ChannelAction::Create;
 use serenity::all::Http;
 use serenity::all::{
-    CreateAttachment, GatewayIntents, Interaction, Message, Ready
+    CreateAttachment, GatewayIntents, Interaction, Message, Ready, GuildId
 };
 use sqlx::Sqlite;
 use std::future::IntoFuture as _;
@@ -59,7 +59,7 @@ struct DinkHandler {
     price_manager: Arc<prices::PriceManager>,
     collection_log_manager: Arc<collection_log::CollectionLogManager>,
     runescape_tracker: Arc<runescape_tracker::RunescapeTracker>,
-    http: Arc<Http>,
+    ctx: Context,
 }
 
 #[async_trait]
@@ -75,7 +75,7 @@ impl EventHandler for Handler {
         let data = ctx.data.read().await;
         if let Some(config) = data.get::<ConfigKey>() {
             if let Some(runelite_channel_id) = config.runelite_channel_id {
-                if msg.channel_id == runelite_channel_id && msg.author.bot {
+                if msg.channel_id == runelite_channel_id && msg.author.bot && msg.author.id != ctx.cache.current_user().id {
                     if let Err(why) = self.runescape_tracker.process_message(&ctx, &msg, &self.db).await {
                         error!("Error processing RuneLite message: {:?}", why);
                     }
@@ -102,6 +102,32 @@ impl EventHandler for Handler {
 
         // Start price updates
         Arc::clone(&self.price_manager).start_price_updates().await;
+    }
+    async fn cache_ready(&self, ctx: Context, _guilds: Vec<GuildId>) {
+        println!("Cache built successfully!");
+
+        // tokio::spawn creates a new green thread that can run in parallel with the rest of
+        // the application.
+        let handler = DinkHandler {
+            db: self.db.clone(),
+            price_manager: Arc::clone(&self.price_manager),
+            collection_log_manager: Arc::clone(&self.collection_log_manager),
+            runescape_tracker: Arc::clone(&self.runescape_tracker),
+            ctx: ctx,
+        };
+        tokio::spawn(async move {
+            // build our application with a single route
+            let app = Router::new().route("/dink", post(dink_listener::dink_handler).get(dink_listener::dink_handler))
+                .route("/", get(|| async { "Hello, World!" }))
+                .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+                .layer(Extension(handler));
+            // run our app with hyper, listening globally on port 3000
+            let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+            let server = axum::serve(listener, app);
+            if let Err(why) = server.into_future().await {
+                println!("Err with server: {:?}", why);
+            }
+        });
     }
 }
 
@@ -147,32 +173,15 @@ async fn main() -> Result<()> {
         })
         .await?;
 
-    // build our application with a single route
-    let app = Router::new().route("/dinky", post(dink_listener::dink_handler).get(dink_listener::dink_handler))
-    .route("/", get(|| async { "Hello, World!" }))
-    .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
-    .layer(Extension(DinkHandler {
-            db: db.clone(),
-            price_manager: Arc::clone(&price_manager),
-            collection_log_manager: Arc::clone(&collection_log_manager),
-            runescape_tracker: Arc::clone(&runescape_tracker),
-            http: client.http.clone(),
-        }));
-
     // Store config in client data
     {
         let mut data = client.data.write().await;
         data.insert::<ConfigKey>(config);
     }
 
-    // run our app with hyper, listening globally on port 3000
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    let server = axum::serve(listener, app);
-
-    tokio::select! {
-        err = client.start() => tracing::warn!("Discord client quit: {err:?}"),
-        err = server.into_future() => tracing::warn!("Axum server quit: {err:?}"),
-    }  
+    if let Err(why) = client.start().await {
+        println!("Err with client: {:?}", why);
+    }
 
     Ok(())
 } 

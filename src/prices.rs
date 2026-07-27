@@ -13,11 +13,11 @@ pub struct ItemMapping {
     pub id: i64,
     pub members: Option<bool>,
     #[serde(rename = "lowalch")]
-    pub low_alch: Option<i64>,
+    pub low_alch: Option<f64>,
     pub limit: Option<i64>,
     pub value: Option<i64>,
     #[serde(rename = "highalch")]
-    pub high_alch: Option<i64>,
+    pub high_alch: Option<f64>,
     pub icon: Option<String>,
     pub name: String,
 }
@@ -29,9 +29,9 @@ pub struct LatestPrices {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ItemPrice {
-    pub high: Option<i64>,
+    pub high: Option<f64>,
     pub high_time: Option<i64>,
-    pub low: Option<i64>,
+    pub low: Option<f64>,
     pub low_time: Option<i64>,
 }
 
@@ -78,7 +78,7 @@ impl PriceManager {
 
     async fn fetch_mappings(client: &reqwest::Client) -> Result<HashMap<String, ItemMapping>> {
         let response = client
-            .get("https://prices.runescape.wiki/api/v1/osrs/mapping")
+            .get("https://prices.runescape.wiki/api/v2/osrs/mapping")
             .send()
             .await?
             .json::<Vec<ItemMapping>>()
@@ -95,7 +95,7 @@ impl PriceManager {
 
     pub async fn update_prices(&self) -> Result<()> {
         let response = self.client
-            .get("https://prices.runescape.wiki/api/v1/osrs/latest")
+            .get("https://prices.runescape.wiki/api/v2/osrs/latest")
             .send()
             .await?
             .json::<LatestPrices>()
@@ -150,6 +150,6 @@ impl PriceManager {
         Some(price.low
             .or(price.high)
             .or(mapping.high_alch)
-            .unwrap_or(0))
+            .unwrap_or(0.0).round() as i64)
     }
 } 

@@ -53,7 +53,7 @@ pub async fn add_points(
     // Get new points total
     let new_points = old_points + points_to_add;
 
-    notify_rank_transition(ctx, discord_id, user_name, old_points, new_points, db).await;
+    let _ = notify_rank_transition(ctx, discord_id, user_name, old_points, new_points, db).await;
 
     // Track rank changes
     let mut crossed_ranks = Vec::new();

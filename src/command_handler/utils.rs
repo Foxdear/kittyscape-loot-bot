@@ -10,7 +10,7 @@ pub fn format_number(n: i64) -> String {
 }
 
 pub fn format_gp(n: i64) -> String {
-    format!("{} gp", format_number(n))
+    format!("{} GP", format_number(n))
 }
 
 pub fn format_points(n: i64) -> String {
