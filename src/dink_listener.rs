@@ -18,7 +18,7 @@ use std::sync::Arc;
 use dotenvy::dotenv;
 use axum::{
     body::{Body, Bytes},
-    extract::{Request, Json, Query, Multipart},
+    extract::{Request, Json, Query, Multipart, FromRequest},
     http::{header::CONTENT_TYPE, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -96,46 +96,92 @@ struct DinkFile {
     content: Bytes,
 }
 
-pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderMap, mut multipart: Multipart) {
-
-    let agent = headers.get("user-agent").unwrap().clone();
-    let agent_str = agent.to_str().unwrap();
+pub async fn dink_handler(Extension(handler): Extension<DinkHandler>, req: Request) -> Response {
+    let Some(agent_str) = req.headers()
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
     // This wouldn't scale well but these are the only two we need to worry about
     // Check user-agent to minimize bad requests
-    if agent_str.starts_with("RuneLite/") || agent_str.starts_with("HDOS/") {
-        // Initialize config
-        let config = Config::from_env().unwrap();
-        // let mut data: DinkPayload;
-        // let mut screenshot: CreateAttachment;
-        let mut dink_file = DinkFile {
-            file_name: "None".to_string(),
-            content: Bytes::new(),
-        };
-        let mut payload_json = Bytes::new();
+    if !(agent_str.starts_with("RuneLite/") || agent_str.starts_with("HDOS/")) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
 
-        while let Some(field) = multipart.next_field().await.unwrap() {
-            let name = field.name().unwrap();
-            match name {
+    let content_type = req.headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    // Dink only sends multipart/form-data when a screenshot is attached; if there's none, it
+    // POSTs a plain application/json body instead. Both need to be accepted, or every
+    // screenshot-less notification gets rejected before it ever reaches the logic below.
+    let (payload_json, dink_file): (Bytes, Option<DinkFile>) = if content_type.starts_with("multipart/form-data") {
+        let mut multipart = match Multipart::from_request(req, &()).await {
+            Ok(m) => m,
+            Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        };
+
+        let mut payload_json: Option<Bytes> = None;
+        let mut dink_file: Option<DinkFile> = None;
+
+        loop {
+            let field = match multipart.next_field().await {
+                Ok(Some(field)) => field,
+                Ok(None) => break,
+                Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+            };
+            let field_name = field.name().unwrap_or("").to_string();
+            match field_name.as_str() {
                 "payload_json" => {
                     debug!("Found payload");
-                    payload_json = field.bytes().await.unwrap();
-                    debug!("Payload length: {}", payload_json.len());
+                    payload_json = field.bytes().await.ok();
                 }
                 "file" => {
                     debug!("Found screenshot");
-                    //info!("Field info: {:#?}", field);
-                    dink_file.file_name = field.file_name().unwrap().to_string();
-                    dink_file.content = field.bytes().await.unwrap();
+                    let file_name = field.file_name().unwrap_or("screenshot.png").to_string();
+                    if let Ok(content) = field.bytes().await {
+                        dink_file = Some(DinkFile { file_name, content });
+                    }
                 }
-                _ => {error!("Error handling field: {:?}", name)}
-                
+                other => error!("Error handling field: {:?}", other),
             }
         }
 
-        debug!("Payload: {:#?}", payload_json);
-        let data: DinkPayload = serde_json::from_slice(&payload_json).unwrap();
-        let screenshot = CreateAttachment::bytes(dink_file.content, dink_file.file_name);
-        let mut author = CreateEmbedAuthor::new(data.player_name.clone());
+        let Some(payload_json) = payload_json else {
+            return StatusCode::BAD_REQUEST.into_response();
+        };
+        (payload_json, dink_file)
+    } else if content_type.starts_with("application/json") {
+        match Bytes::from_request(req, &()).await {
+            Ok(bytes) => (bytes, None),
+            Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        }
+    } else {
+        return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
+    };
+
+    debug!("Payload length: {}", payload_json.len());
+    let data: DinkPayload = match serde_json::from_slice(&payload_json) {
+        Ok(data) => data,
+        Err(e) => {
+            error!("Failed to parse Dink payload: {:?}", e);
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+
+    process_dink_event(handler, data, dink_file).await;
+    StatusCode::OK.into_response()
+}
+
+async fn process_dink_event(dink_handler: DinkHandler, data: DinkPayload, dink_file: Option<DinkFile>) {
+    // Initialize config
+    let config = Config::from_env().unwrap();
+    let screenshot = dink_file.map(|f| CreateAttachment::bytes(f.content, f.file_name));
+    let mut author = CreateEmbedAuthor::new(data.player_name.clone());
         if data.account_type.as_str() != "NORMAL" { //Mains don't have rights
             let icon = match data.account_type.as_str() {
                 "IRONMAN" => "Ironman_chat_badge.png",
@@ -150,8 +196,10 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
         }
         let mut embed = CreateEmbed::new()
         .author(author)
-        .image(format!("attachment://{}", screenshot.filename))
         .timestamp(Timestamp::now());
+        if let Some(ref shot) = screenshot {
+            embed = embed.image(format!("attachment://{}", shot.filename));
+        }
         let discord_member = identify_user(data.clone(), dink_handler.db.clone(), dink_handler.ctx.clone(), dink_handler.guild_id, config.runelite_channel_id).await;
         if discord_member.is_some() && !data.seasonal_world {
             //If we can't find the user an account belongs to, they probably shouldn't be getting posted
@@ -352,10 +400,19 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
             }
             if sendable {
                 let builder = CreateMessage::new().add_embed(embed);
-
-                let _ = config.runelite_channel_id.unwrap().send_files(&dink_handler.ctx.http, [screenshot], builder).await;
+                let Some(channel_id) = config.runelite_channel_id else {
+                    error!("RUNELITE_CHANNEL_ID not configured, dropping Dink notification");
+                    return;
+                };
+                let send_result = match screenshot {
+                    Some(shot) => channel_id.send_files(&dink_handler.ctx.http, [shot], builder).await.map(|_| ()),
+                    None => channel_id.send_message(&dink_handler.ctx.http, builder).await.map(|_| ()),
+                };
+                if let Err(why) = send_result {
+                    error!("Failed to send Dink notification: {:?}", why);
+                }
             }
-            
+
         }
         else {
             let _ = logger::log_generic(
@@ -363,7 +420,6 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                 &format!("UNKNOWN USER: Someone I couldn't find in the discord server tried to do something: RSN {} sent something with Dink of type {}", data.player_name, data.notif_type)
             ).await;
         }
-    }  
 }
 //This function is so if you want to change the formatting on everything, you can ("fix" makes the text blue)
 fn format_value (value: String) -> String {
@@ -444,7 +500,7 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
 /// enables PRAGMA foreign_keys by default), so the upsert has to happen before that insert too,
 /// or it fails silently right along with the points update.
 /// Returns (points awarded, user's new points total).
-async fn dink_clog(handler: &Extension<DinkHandler>, item_id: i32, name: String, discord_id: String, user_name: &str) -> (i64, i64) {
+async fn dink_clog(handler: &DinkHandler, item_id: i32, name: String, discord_id: String, user_name: &str) -> (i64, i64) {
     let _ = sqlx::query!(
         "INSERT INTO users (discord_id, points, total_drops)
          VALUES (?, 0, 0)
@@ -479,7 +535,7 @@ async fn dink_clog(handler: &Extension<DinkHandler>, item_id: i32, name: String,
 /// touched, unlike the /drop command - /stats and /leaderboard both read it directly), then
 /// awards points through `rank_manager::add_points` (see dink_clog for why).
 /// Returns the user's new points total.
-async fn dink_drop(handler: &Extension<DinkHandler>, item_id: i32, name: String, value: i64, discord_id: String, user_name: &str) -> i64 {
+async fn dink_drop(handler: &DinkHandler, item_id: i32, name: String, value: i64, discord_id: String, user_name: &str) -> i64 {
     // Ensure the user row exists before total_drops is touched directly below
     let _ = sqlx::query!(
         "INSERT INTO users (discord_id, points, total_drops)
