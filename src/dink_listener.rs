@@ -462,6 +462,16 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
             //We'll just help them automagically
             member = Some(member_found);
 
+            //If the user is totally new, make sure we have a row for them
+            let _ = sqlx::query!(
+                "INSERT INTO users (discord_id, points, total_drops)
+                VALUES (?, 0, 0)
+                ON CONFLICT(discord_id) DO NOTHING",
+                discord_id
+            )
+            .execute(&db)
+            .await;
+
             // Link RS name to Discord ID
             let _ = sqlx::query!(
                 "INSERT INTO runescape_accounts (discord_id, runescape_name, dink_hash) 
@@ -497,14 +507,6 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
 /// or it fails silently right along with the points update.
 /// Returns (points awarded, user's new points total).
 async fn dink_clog(handler: &DinkHandler, item_id: i32, name: String, discord_id: String, user_name: &str) -> (i64, i64) {
-    let _ = sqlx::query!(
-        "INSERT INTO users (discord_id, points, total_drops)
-         VALUES (?, 0, 0)
-         ON CONFLICT(discord_id) DO NOTHING",
-        discord_id
-    )
-    .execute(&handler.db)
-    .await;
 
     let points = handler.collection_log_manager.calculate_points_dink(item_id).await.unwrap_or(0);
 
@@ -532,15 +534,6 @@ async fn dink_clog(handler: &DinkHandler, item_id: i32, name: String, discord_id
 /// awards points through `rank_manager::add_points` (see dink_clog for why).
 /// Returns the user's new points total.
 async fn dink_drop(handler: &DinkHandler, item_id: i32, name: String, value: i64, discord_id: String, user_name: &str) -> i64 {
-    // Ensure the user row exists before total_drops is touched directly below
-    let _ = sqlx::query!(
-        "INSERT INTO users (discord_id, points, total_drops)
-         VALUES (?, 0, 0)
-         ON CONFLICT(discord_id) DO NOTHING",
-        discord_id
-    )
-    .execute(&handler.db)
-    .await;
 
     // Record the drop
     let _ = sqlx::query!(
@@ -553,18 +546,19 @@ async fn dink_drop(handler: &DinkHandler, item_id: i32, name: String, value: i64
     .execute(&handler.db)
     .await;
 
-    let _ = sqlx::query!(
-        "UPDATE users
-        SET total_drops = total_drops + 1
-        WHERE discord_id = ?",
-        discord_id
-    )
-    .execute(&handler.db)
-    .await;
-
     let points = value / 100_000;
     match rank_manager::add_points(&handler.ctx, &discord_id, user_name, points, &handler.db).await {
-        Ok(update) => update.new_points,
+        Ok(update) => {
+            let _ = sqlx::query!(
+                "UPDATE users
+                SET total_drops = total_drops + 1
+                WHERE discord_id = ?",
+                discord_id
+            )
+            .execute(&handler.db)
+            .await;
+            update.new_points
+        },
         Err(e) => {
             error!("Failed to record points for Dink drop: {:?}", e);
             0
