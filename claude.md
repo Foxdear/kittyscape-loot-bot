@@ -162,7 +162,12 @@ kittyscape-loot-bot/
    DATABASE_URL=sqlite:kittyscape.db
    MOD_CHANNEL_ID=your_mod_channel_id_here
    BOT_LOG_CHANNEL_ID=your_log_channel_id_here
+   DINK_WEBHOOK_TOKEN=a_long_random_secret_here
    ```
+   `DINK_WEBHOOK_TOKEN` is the shared secret in the `/dink/{token}` webhook path (see Dink
+   Integration below) - Dink can't send custom headers, so this is the only thing gating that
+   endpoint. Configure the matching URL (`http://your-host:3000/dink/<token>`) as the webhook URL
+   in the Dink plugin, or in a hosted, importable Dink config distributed to your players.
 3. Run migrations to set up the database
 4. Start the bot with `cargo run`
 
