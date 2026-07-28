@@ -53,39 +53,7 @@ pub async fn add_points(
     // Get new points total
     let new_points = old_points + points_to_add;
 
-    let _ = notify_rank_transition(ctx, discord_id, user_name, old_points, new_points, db).await;
-
-    // Track rank changes
-    let mut crossed_ranks = Vec::new();
-
-    //Surely there is a cleaner way to do this
-    let ranks_crossed = if new_points > old_points {
-        sqlx::query_as::<_, (i64, String)>(
-            "SELECT points, role_name FROM rank_thresholds
-             WHERE points > ? AND points <= ?
-             ORDER BY points ASC"
-        )
-        .bind(old_points)
-        .bind(new_points)
-        .fetch_all(db)
-        .await?
-    }
-    else {
-        sqlx::query_as::<_, (i64, String)>(
-            "SELECT points, role_name FROM rank_thresholds
-                WHERE points > ? AND points <= ?
-                ORDER BY points ASC"
-        )
-        .bind(new_points)
-        .bind(old_points)
-        .fetch_all(db)
-        .await? 
-    };
-    
-    // Extract crossed rank names
-    crossed_ranks = ranks_crossed.iter()
-        .map(|r| r.1.clone())
-        .collect();
+    let crossed_ranks = notify_rank_transition(ctx, discord_id, user_name, old_points, new_points, db).await?;
 
     // Get next rank for progress message
     let next_rank = sqlx::query!(
@@ -114,7 +82,7 @@ pub async fn notify_rank_transition(
     old_points: i64,
     new_points: i64,
     db: &SqlitePool,
-) -> Result<()> {
+) -> Result<Vec<String>> {
 
     // Track rank changes
     let mut crossed_ranks = Vec::new();
@@ -259,5 +227,5 @@ pub async fn notify_rank_transition(
         }
     }
 
-    Ok(())
+    Ok(crossed_ranks)
 }
