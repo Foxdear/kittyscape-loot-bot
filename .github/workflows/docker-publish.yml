@@ -36,7 +36,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/kittyscape-loot-bot
+          images: ${{ secrets.DOCKERHUB_USERNAME || github.repository_owner }}/kittyscape-loot-bot
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -60,4 +60,4 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max' || '' }}
