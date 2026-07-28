@@ -9,42 +9,24 @@ mod dink_listener;
 
 use anyhow::Result;
 use axum::Extension;
-use axum::RequestExt;
 use axum::extract::DefaultBodyLimit;
-use axum::routing::post;
-use serde_json::error::Category::Data;
-use serenity::all::ChannelAction::Create;
-use serenity::all::Http;
+use axum::routing::{get, post};
+use axum::Router;
 use serenity::all::{
-    CreateAttachment, GatewayIntents, Interaction, Message, Ready, GuildId
+    GatewayIntents, Interaction, Message, Ready, GuildId
 };
-use sqlx::Sqlite;
 use std::future::IntoFuture as _;
 use serenity::async_trait;
 use serenity::prelude::*;
-use serenity::all::CreateMessage;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use std::env;
-use std::fs::File;
 use std::sync::Arc;
 use dotenvy::dotenv;
-use axum::{
-    body::{Body, Bytes},
-    extract::{Request, Json, Query, Multipart},
-    http::{header::CONTENT_TYPE, StatusCode},
-    middleware::{self, Next},
-    response::{IntoResponse, Response},
-    routing::get,
-    Router,
-    Form,
-};
-use serde_json::Value;
-use tracing::{error, info, debug};
+use tracing::{error, info};
 use command_handler::{PriceManagerKey, CollectionLogManagerKey};
 use config::{Config, ConfigKey};
 use runescape_tracker::RunescapeTrackerKey;
-use serde::Deserialize;
 
 struct Handler {
     db: SqlitePool,
@@ -104,7 +86,7 @@ impl EventHandler for Handler {
         Arc::clone(&self.price_manager).start_price_updates().await;
     }
     async fn cache_ready(&self, ctx: Context, _guilds: Vec<GuildId>) {
-        println!("Cache built successfully!");
+        info!("Cache built successfully!");
 
         // tokio::spawn creates a new green thread that can run in parallel with the rest of
         // the application.
@@ -113,11 +95,11 @@ impl EventHandler for Handler {
             price_manager: Arc::clone(&self.price_manager),
             collection_log_manager: Arc::clone(&self.collection_log_manager),
             runescape_tracker: Arc::clone(&self.runescape_tracker),
-            ctx: ctx,
+            ctx,
         };
         tokio::spawn(async move {
             // build our application with a single route
-            let app = Router::new().route("/dink", post(dink_listener::dink_handler).get(dink_listener::dink_handler))
+            let app = Router::new().route("/dink", post(dink_listener::dink_handler))
                 .route("/", get(|| async { "Hello, World!" }))
                 .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
                 .layer(Extension(handler));
@@ -125,7 +107,7 @@ impl EventHandler for Handler {
             let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
             let server = axum::serve(listener, app);
             if let Err(why) = server.into_future().await {
-                println!("Err with server: {:?}", why);
+                error!("Err with server: {:?}", why);
             }
         });
     }
@@ -180,7 +162,7 @@ async fn main() -> Result<()> {
     }
 
     if let Err(why) = client.start().await {
-        println!("Err with client: {:?}", why);
+        error!("Err with client: {:?}", why);
     }
 
     Ok(())
