@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT * FROM users \n                WHERE discord_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "discord_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "points",
+        "ordinal": 1,
+        "type_info": "Int64"
+      },
+      {
+        "name": "total_drops",
+        "ordinal": 2,
+        "type_info": "Int64"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "fca32f596ecb115f0b3db46cd3794ddcc5fd3773be4bac2097be8a1f385ad603"
+}

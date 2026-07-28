@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT item_id, item_name FROM collection_log_items WHERE item_name = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "item_id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "item_name",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "610d4b6ff2418c7241fee23707f2e80115a6c927b6380e6078b4bcd182e6dfbf"
+}

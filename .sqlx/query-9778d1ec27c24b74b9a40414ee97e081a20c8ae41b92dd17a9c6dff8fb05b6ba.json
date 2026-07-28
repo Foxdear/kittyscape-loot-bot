@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE users \n            SET points = points + ?\n            WHERE discord_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "9778d1ec27c24b74b9a40414ee97e081a20c8ae41b92dd17a9c6dff8fb05b6ba"
+}
