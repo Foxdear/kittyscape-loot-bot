@@ -1,7 +1,8 @@
 PRAGMA foreign_keys=0;
 DROP VIEW IF EXISTS v_categories_clogs;
 DROP VIEW IF EXISTS v_item_data;
-CREATE TABLE "new_collection_log_items" ( --We could probably just drop the table altogether but this is "safest"
+--We could probably just drop the table altogether but this is "safest"
+CREATE TABLE "new_collection_log_items" (
 	"item_id"	INTEGER NOT NULL,
 	"item_name"	TEXT NOT NULL,
 	"preferred_name"	TEXT NOT NULL,
