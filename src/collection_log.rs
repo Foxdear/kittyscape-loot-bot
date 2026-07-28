@@ -12,11 +12,6 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, query};
 const USER_AGENT: &str = "KittyScape Loot Bot/1.0";
 const WIKI_API_URL: &str = "https://oldschool.runescape.wiki/api.php";
 
-#[derive(Debug, Clone)]
-pub struct CollectionLogData {
-    pub completion_rates: HashMap<String, f64>,
-}
-
 pub struct CollectionLogItem {
     pub item_id: i64,
     pub item_name: String,
@@ -27,7 +22,6 @@ pub struct CollectionLogItem {
 }
 
 pub struct CollectionLogManager<> {
-    data: Arc<RwLock<CollectionLogData>>,
     db: SqlitePool,
 }
 
@@ -40,31 +34,23 @@ impl CollectionLogManager<> {
         let completion_items: u64 = Self::fetch_completion_rates(&client, &db).await?;
         info!("CollectionLogManager initialized with {} items", completion_items);
 
-        let completion_data = sqlx::query!(
-            "SELECT item_name, percentage FROM collection_log_items",
-        )
-        .fetch_all(db)
-        .await?;
+        let loop_db = db.clone();
 
-        let mut completion_rates: HashMap<String, f64> = HashMap::new();
-
-        for comp_data_item in completion_data.iter() {
-            let item_name = comp_data_item.item_name.clone();
-            let percentage = comp_data_item.percentage.clone();
-            completion_rates.insert(item_name, percentage.parse::<f64>().unwrap());
-        }
-
-        // Debug log some example items
-        for (name, rate) in completion_rates.iter().take(5) {
-            debug!("Example collection log item: {} - {}%", name, rate);
-        }
-
-        let data = CollectionLogData {
-            completion_rates,
-        };
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_hours(24)).await;
+                match Self::fetch_completion_rates(&client, &loop_db).await {
+                    Ok(clogs) => {
+                        info!("CollectionLogManager refreshed with {} items", clogs);
+                    }
+                    Err(e) => {
+                        error!("Failed to update clogs: {}", e);
+                    }
+                }
+            }
+        });
 
         Ok(Self {
-            data: Arc::new(RwLock::new(data)),
             db: db.clone(),
         })
     }
@@ -326,15 +312,19 @@ impl CollectionLogManager<> {
     }
 
     pub async fn get_suggestions(&self, partial: &str) -> Vec<String> {
-        let data = self.data.read().await;
         let partial = partial.to_lowercase();
 
-        data.completion_rates
-            .keys()
-            .filter(|name| name.to_lowercase().contains(&partial))
-            .take(25)
-            .cloned()
-            .collect()
+        let mut query_suggestions = vec![];
+
+        let query_results = sqlx::query!("SELECT item_name FROM collection_log_items WHERE item_name LIKE '%' || ? || '%' LIMIT 25", partial)
+        .fetch_all(&self.db)
+        .await;
+
+        for (i, result) in query_results.unwrap().into_iter().enumerate() {
+            query_suggestions.push(result.item_name);
+        }
+
+        query_suggestions
     }
 
     pub async fn get_category_suggestions(&self, partial: &str) -> Vec<String> {
