@@ -426,12 +426,11 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
 
     //Okay who are we dealing with here
     //Check username and hash (if we can't find one we'll find the other)
-    //The only way this goes wrong (returns two rows) is if someone changes their name and a second person takes the old name
-    //That'd be fucked up. I'm not accounting for that
+    //If a hash exists, check that it matches, otherwise it's fine if it's null
     let username = data.player_name;
     let hash = data.dink_account_hash;
     let user = sqlx::query!("SELECT * FROM runescape_accounts 
-    WHERE runescape_name = ? OR dink_hash = ?",
+    WHERE runescape_name = ? AND (dink_hash IS NULL OR dink_hash = ?)",
     username, hash)
     .fetch_one(&db)
     .await;
