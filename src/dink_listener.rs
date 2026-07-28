@@ -30,6 +30,7 @@ use crate::runescape_tracker::RunescapeTrackerKey;
 use crate::DinkHandler;
 use serde::Deserialize;
 use crate::logger;
+use crate::rank_manager;
 use crate::command_handler::utils;
 
 // https://github.com/pajlads/DinkPlugin/blob/master/docs/json-examples.md
@@ -162,16 +163,6 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
 
             let discord_id = member.user.id.to_string();
 
-            let user_record = sqlx::query!(
-                "SELECT * FROM users 
-                WHERE discord_id = ?",
-                discord_id
-            )
-            .fetch_one(&dink_handler.db)
-            .await
-            .ok()
-            .unwrap();
-
             let mut sendable = false;
 
             match data.notif_type.as_str() {
@@ -208,10 +199,10 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                                 &format!("{} received collection log item they already had: {}", data.player_name, item_name)
                             ).await;
                         } else {
-                            let points = dink_clog(&dink_handler, id, item_name.clone(), discord_id.clone()).await;
+                            let (points, new_total) = dink_clog(&dink_handler, id, item_name.clone(), discord_id.clone(), &member.display_name()).await;
                             description = format!("Got a new collection log item:\n**{}**!", search_link(item_name.clone()));
                             //Now that we know for sure the item is valid we can build the embed
-                            
+
                             embed = embed.field("Global Clog Rate", format_value(format!("{}%", item.percentage.unwrap())), true)
                             .field("Collection Log", format_value(format!("{}/{}", data.extra.completed_entries.unwrap(), data.extra.total_entries.unwrap())), true)
                             .field("", "", false);
@@ -223,7 +214,7 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                             }
 
                             embed = embed.field("Points Added", format_value(format!("+{}", points)), true)
-                            .field("Points Total", format_value(user_record.points.to_string()), true);
+                            .field("Points Total", format_value(new_total.to_string()), true);
                             
                             let _ = logger::log_action(
                                 &dink_handler.ctx,
@@ -240,7 +231,7 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                         //We don't have data so we kinda just have to abandon ship
                         description = format!("Got a new collection log item:\n**{}**!\n\nBut, ummm... I don't know what that is yet... sorry...", search_link(item_name.clone()));
                         //We can still add the record but no points will be added
-                        dink_clog(&dink_handler, id, item_name.clone(), discord_id.clone()).await;
+                        dink_clog(&dink_handler, id, item_name.clone(), discord_id.clone(), &member.display_name()).await;
                         let _ = logger::log_action(
                                 &dink_handler.ctx,
                                 &discord_id,
@@ -287,14 +278,14 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                             let rarity = rarity_val * 100.0;
                             embed = embed.field("Rarity (approx)", format!("```glsl\n# 1/{} ({:.2}%)```", denom, rarity), true);
                         }
+                        let new_total = dink_drop(&dink_handler, item.id, item.name.clone(), best, discord_id.clone(), &member.display_name()).await;
                         embed = embed.description(description)
                         .field("GE Price", format_value(utils::format_gp(best)), true)
                         .field("", "", false)
                         .field("Points Added", format_value(format!("+{}", points)), true)
-                        .field("Points Total", format_value(user_record.points.to_string()), true)
+                        .field("Points Total", format_value(new_total.to_string()), true)
                         .thumbnail(format!("https://static.runelite.net/cache/item/icon/{}.png", item.id));
-                        dink_drop(&dink_handler, item.id, item.name.clone(), best, discord_id.clone()).await;
-                        
+
                         // Log the auto-added drop to the bot log channel
                         let _ = crate::logger::log_action(
                             &dink_handler.ctx,
@@ -442,9 +433,28 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context) -> Opti
     }
     member
 }
-async fn dink_clog(handler: &Extension<DinkHandler>, item_id: i32, name: String, discord_id: String) -> i64 {
-    let points = handler.collection_log_manager.calculate_points_dink(item_id).await;
-    let points = if points.is_some() { points.unwrap() } else { 0 };
+/// Records a Dink collection log entry and awards points (if any) through
+/// `rank_manager::add_points`, instead of a raw `UPDATE users`. That gets us three things for
+/// free: the `users` row is upserted before anything references it (a raw `UPDATE` on a
+/// nonexistent row is a silent no-op - the previous code assumed the row already existed, which
+/// isn't true for a brand-new user's first-ever event), rank-up/down notifications fire the same
+/// way they do for the /clog command, and the caller can show the real post-event points total
+/// instead of whatever was on hand before this event.
+/// collection_log_entries.discord_id also has a foreign key on users.discord_id (enforced - sqlx
+/// enables PRAGMA foreign_keys by default), so the upsert has to happen before that insert too,
+/// or it fails silently right along with the points update.
+/// Returns (points awarded, user's new points total).
+async fn dink_clog(handler: &Extension<DinkHandler>, item_id: i32, name: String, discord_id: String, user_name: &str) -> (i64, i64) {
+    let _ = sqlx::query!(
+        "INSERT INTO users (discord_id, points, total_drops)
+         VALUES (?, 0, 0)
+         ON CONFLICT(discord_id) DO NOTHING",
+        discord_id
+    )
+    .execute(&handler.db)
+    .await;
+
+    let points = handler.collection_log_manager.calculate_points_dink(item_id).await.unwrap_or(0);
 
     // Record the collection log entry
     let _ = sqlx::query!(
@@ -457,24 +467,30 @@ async fn dink_clog(handler: &Extension<DinkHandler>, item_id: i32, name: String,
     .execute(&handler.db)
     .await;
 
-    if points > 0 {
-        // Update user points
-        let _ = sqlx::query!(
-            "UPDATE users 
-            SET points = points + ?
-            WHERE discord_id = ?",
-            points,
-            discord_id
-        )
-        .execute(&handler.db)
-        .await;
+    match rank_manager::add_points(&handler.ctx, &discord_id, user_name, points, &handler.db).await {
+        Ok(update) => (points, update.new_points),
+        Err(e) => {
+            error!("Failed to record points for Dink clog: {:?}", e);
+            (points, 0)
+        }
     }
-
-    points
 }
-async fn dink_drop(handler: &Extension<DinkHandler>, item_id: i32, name: String, value: i64, discord_id: String) {
+/// Records a Dink drop and increments total_drops (which the previous raw-SQL version never
+/// touched, unlike the /drop command - /stats and /leaderboard both read it directly), then
+/// awards points through `rank_manager::add_points` (see dink_clog for why).
+/// Returns the user's new points total.
+async fn dink_drop(handler: &Extension<DinkHandler>, item_id: i32, name: String, value: i64, discord_id: String, user_name: &str) -> i64 {
+    // Ensure the user row exists before total_drops is touched directly below
+    let _ = sqlx::query!(
+        "INSERT INTO users (discord_id, points, total_drops)
+         VALUES (?, 0, 0)
+         ON CONFLICT(discord_id) DO NOTHING",
+        discord_id
+    )
+    .execute(&handler.db)
+    .await;
 
-    // Record the collection log entry
+    // Record the drop
     let _ = sqlx::query!(
         "INSERT INTO drops (discord_id, item_name, value, item_id) VALUES (?, ?, ?, ?)",
         discord_id,
@@ -485,19 +501,23 @@ async fn dink_drop(handler: &Extension<DinkHandler>, item_id: i32, name: String,
     .execute(&handler.db)
     .await;
 
-    let points = value / 100_000;
-
-    // Update user points
     let _ = sqlx::query!(
-        "UPDATE users 
-        SET points = points + ?
+        "UPDATE users
+        SET total_drops = total_drops + 1
         WHERE discord_id = ?",
-        points,
         discord_id
     )
     .execute(&handler.db)
     .await;
 
+    let points = value / 100_000;
+    match rank_manager::add_points(&handler.ctx, &discord_id, user_name, points, &handler.db).await {
+        Ok(update) => update.new_points,
+        Err(e) => {
+            error!("Failed to record points for Dink drop: {:?}", e);
+            0
+        }
+    }
 }
 fn field_if_exists(embed: CreateEmbed, value: Option<String>, name: &str) -> CreateEmbed {
     if value.is_some() { embed.field(name, value.unwrap(), true) } else { embed }
