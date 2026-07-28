@@ -169,16 +169,20 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                 "COLLECTION" => {
                     sendable = true;
                     debug!("Received collection log");
-                    let id = data.extra.item_id.clone().unwrap();
+                    let Some(id) = data.extra.item_id else {
+                        debug!("COLLECTION event with no itemId, dropping");
+                        return;
+                    };
                     let item = sqlx::query!("SELECT * FROM v_item_data WHERE item_id = ?", id)
                     .fetch_one(&dink_handler.db)
                     .await
                     .ok();
                     //Initiate
                     let description: String;
-                    if item.is_some() {
-                        let item = item.unwrap();
-                        let item_name = item.preferred_name.unwrap();
+                    if let Some(item) = item {
+                        let item_name = item.preferred_name.clone()
+                            .or_else(|| item.item_name.clone())
+                            .unwrap_or_else(|| "an unknown item".to_string());
                         //Do they have this item recorded already?
                         if let Ok(Some(_)) = sqlx::query!(
                             "SELECT id FROM collection_log_entries 
@@ -203,8 +207,11 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                             description = format!("Got a new collection log item:\n**{}**!", search_link(item_name.clone()));
                             //Now that we know for sure the item is valid we can build the embed
 
-                            embed = embed.field("Global Clog Rate", format_value(format!("{}%", item.percentage.unwrap())), true)
-                            .field("Collection Log", format_value(format!("{}/{}", data.extra.completed_entries.unwrap(), data.extra.total_entries.unwrap())), true)
+                            let percentage = item.percentage.clone().unwrap_or_else(|| "?".to_string());
+                            embed = embed.field("Global Clog Rate", format_value(format!("{}%", percentage)), true)
+                            .field("Collection Log", format_value(format!("{}/{}",
+                                data.extra.completed_entries.unwrap_or_default(),
+                                data.extra.total_entries.unwrap_or_default())), true)
                             .field("", "", false);
 
                             if data.extra.dropper_name.is_some() || data.extra.dropper_kill_count.is_some() {
@@ -226,7 +233,7 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                         
                     }
                     else {
-                        let item_name = data.extra.item_name.unwrap();
+                        let item_name = data.extra.item_name.clone().unwrap_or_else(|| "an unknown item".to_string());
                         //If we don't have a record for it, it's probably new
                         //We don't have data so we kinda just have to abandon ship
                         description = format!("Got a new collection log item:\n**{}**!\n\nBut, ummm... I don't know what that is yet... sorry...", search_link(item_name.clone()));
@@ -249,8 +256,11 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                     //Part of the reason for this update is because RDT uncut sapphires (for example) are technically ~1/170
                     //Technically *rare* when some valuable drops are 1/128, but when people had their drop plugins set improperly we'd get notified for basically everything
                     //Dink does not have rarity set for every drop (according to docs), so we'll just say if it's high enough value it's fine
+                    let Some(items) = data.extra.items else {
+                        debug!("LOOT event with no items, dropping");
+                        return;
+                    };
                     let mut valuable: Option<DinkItem> = None;
-                    let items = data.extra.items.unwrap();
                     let mut best: i64 = 0;
                     for (_i, item) in items.iter().enumerate() {
                         let value = item.quantity * item.price_each;
@@ -260,20 +270,18 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                             best = value;
                         }
                     }
-                    if valuable.is_some() {
+                    if let Some(item) = valuable {
                         //Now that we know it's valuable, we're okay to send
                         sendable = true;
-                        let item = valuable.unwrap();
                         let points = best / 100_000;
-                        let source = data.extra.source.unwrap();
+                        let source = data.extra.source.clone().unwrap_or_else(|| "an unknown source".to_string());
                         let description = if item.quantity > 1 {
                             format!("Got {}x {} from {}!", item.quantity, search_link(item.name.clone()), search_link(source))
                         }
                         else {
                             format!("Got {} from {}!", search_link(item.name.clone()), search_link(source))
                         };
-                        if item.rarity.is_some() {
-                            let rarity_val = item.rarity.unwrap();
+                        if let Some(rarity_val) = item.rarity {
                             let denom = (1.0 / rarity_val).round();
                             let rarity = rarity_val * 100.0;
                             embed = embed.field("Rarity (approx)", format!("```glsl\n# 1/{} ({:.2}%)```", denom, rarity), true);
@@ -308,17 +316,13 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                     sendable = true;
                     debug!("Received pet");
                     //We don't process this for points (yet) so it's pretty simple, relatively
-                    let description = match data.extra.duplicate.unwrap() {
-                        true => {
-                            "You have a funny feeling like you would've been followed..."
-                        }
-                        false => {
-                            "You have a funny feeling like you're being followed..."
-                        }
+                    let description = if data.extra.duplicate.unwrap_or(false) {
+                        "You have a funny feeling like you would've been followed..."
+                    } else {
+                        "You have a funny feeling like you're being followed..."
                     };
                     embed = embed.description(description);
-                    if data.extra.pet_name.is_some() { //Is the name set?
-                        let pet_name = data.extra.pet_name.unwrap();
+                    if let Some(pet_name) = data.extra.pet_name.clone() { //Is the name set?
                         embed = embed.field("Pet", format_value(pet_name.clone()), true);
                         //Check db for item_id (Dink doesn't give this for pets)
                         let pet_row = sqlx::query!(
@@ -327,12 +331,12 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                         )
                         .fetch_one(&dink_handler.db)
                         .await;
-                        if pet_row.is_ok() {
-                            let pet_id = pet_row.unwrap().item_id;
+                        if let Ok(pet_row) = pet_row {
+                            let pet_id = pet_row.item_id;
                             embed = embed.thumbnail(format!("https://static.runelite.net/cache/item/icon/{pet_id}.png"));
                         }
-                        if data.extra.milestone.is_some() { //Do we have a milestone?
-                            embed = embed.field("Milestone", format_value(data.extra.milestone.unwrap()), true);
+                        if let Some(milestone) = data.extra.milestone.clone() { //Do we have a milestone?
+                            embed = embed.field("Milestone", format_value(milestone), true);
                         }
                     }
                 }
@@ -380,9 +384,8 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
     .fetch_one(&db)
     .await;
     //Did we find anyone
-    if user.is_ok() {
+    if let Ok(user) = user {
         //Ok cool. Does all our info match?
-        let user = user.unwrap();
         if !(user.dink_hash == Some(hash.clone()) && user.runescape_name == username) {
             //Either we don't have a hash yet, or the username got changed
             let _ = sqlx::query!("UPDATE runescape_accounts
@@ -392,20 +395,20 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
             .execute(&db).await;
         }
         let member_data = Member::convert(ctx, Some(guild_id), channel_id, &user.discord_id.as_str()).await;
-        if member_data.is_ok() {
-            member = member_data.ok();
+        if let Ok(member_found) = member_data {
+            member = Some(member_found);
         }
     }
     //Well who the fuck is this then
     //Do they have discord data in the notification?
-    else if data.discord_user.is_some() {
+    else if let Some(discord_user) = data.discord_user {
         //Is this person actually in our server?
-        let discord_id = data.discord_user.unwrap().id;
+        let discord_id = discord_user.id;
         let member_data = Member::convert(ctx.clone(), Some(guild_id), channel_id, discord_id.as_str()).await;
-        if member_data.is_ok() {
+        if let Ok(member_found) = member_data {
             //If they're in the server, and using the plugin, we assume they WANT to be tracked
             //We'll just help them automagically
-            member = member_data.ok();
+            member = Some(member_found);
 
             // Link RS name to Discord ID
             let _ = sqlx::query!(
@@ -517,7 +520,7 @@ async fn dink_drop(handler: &Extension<DinkHandler>, item_id: i32, name: String,
     }
 }
 fn field_if_exists(embed: CreateEmbed, value: Option<String>, name: &str) -> CreateEmbed {
-    if value.is_some() { embed.field(name, value.unwrap(), true) } else { embed }
+    if let Some(value) = value { embed.field(name, value, true) } else { embed }
 }
 fn search_link(name: String) -> String {
     let link = format!("https://oldschool.runescape.wiki/w/Special:Search?search={}", name.clone().replace(" ", "%20"));
