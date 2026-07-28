@@ -31,7 +31,7 @@
       {
         "name": "highest_points",
         "ordinal": 5,
-        "type_info": "Int64"
+        "type_info": "Int"
       },
       {
         "name": "whitelist",
@@ -41,7 +41,7 @@
       {
         "name": "clog_count",
         "ordinal": 7,
-        "type_info": "Int64"
+        "type_info": "Int"
       },
       {
         "name": "clamp",
@@ -59,12 +59,12 @@
     },
     "nullable": [
       false,
-      true,
-      true,
-      true,
-      true,
       false,
-      true,
+      false,
+      false,
+      false,
+      false,
+      false,
       false,
       false,
       false

@@ -51,7 +51,7 @@ impl CollectionLogManager<> {
         for comp_data_item in completion_data.iter() {
             let item_name = comp_data_item.item_name.clone();
             let percentage = comp_data_item.percentage.clone();
-            completion_rates.insert(item_name.unwrap(), percentage.unwrap().parse::<f64>().unwrap());
+            completion_rates.insert(item_name, percentage.parse::<f64>().unwrap());
         }
 
         // Debug log some example items
@@ -290,8 +290,8 @@ impl CollectionLogManager<> {
         Some(Self::points(item_record.percentage, item_record.whitelist, item_record.clamp).await?)
     }
 
-    pub async fn points(percentage: Option<String>, whitelist: Option<i64>, clamp: i32) -> Option<i64> {
-        let completion_rate = percentage?.parse::<f64>().ok()?;
+    pub async fn points(percentage: String, whitelist: i64, clamp: i32) -> Option<i64> {
+        let completion_rate = percentage.parse::<f64>().ok()?;
         // Multi-tiered point calculation
         let points = if completion_rate <= 5.0 {
             // Tier 3: Mega-rare items (≤5%)
@@ -303,7 +303,7 @@ impl CollectionLogManager<> {
             let rarity_multiplier = (1.0 / completion_rate).powf(1.5) * 30.0;
             //Is the item in a clamped category, and not whitelisted?
             //Only checked here because the other percentage categories are nowhere near 3k
-            if whitelist == Some(0) && clamp > 0 {
+            if whitelist == 0 && clamp > 0 {
                 (base * rarity_multiplier).clamp(0.0, 3000.0)
             }
             else {

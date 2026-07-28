@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT * FROM runescape_accounts \n    WHERE runescape_name = ? OR dink_hash = ?",
+  "query": "SELECT * FROM runescape_accounts \n    WHERE runescape_name = ? AND (dink_hash IS NULL OR dink_hash = ?)",
   "describe": {
     "columns": [
       {
@@ -40,5 +40,5 @@
       true
     ]
   },
-  "hash": "35c1a1b085a20a882aab5b1076b92458cea8ce059067ea723886d3ddbc5e96af"
+  "hash": "5362b0d0185f342daf2a0d96678f99164bcca4f1e31a3c687808c0d0e065cb4f"
 }

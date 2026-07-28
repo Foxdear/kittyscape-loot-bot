@@ -231,9 +231,7 @@ async fn process_dink_event(dink_handler: DinkHandler, data: DinkPayload, dink_f
                     //Initiate
                     let description: String;
                     if let Some(item) = item {
-                        let item_name = item.preferred_name.clone()
-                            .or_else(|| item.item_name.clone())
-                            .unwrap_or_else(|| "an unknown item".to_string());
+                        let item_name = item.preferred_name.clone();
                         //Do they have this item recorded already?
                         if let Ok(Some(_)) = sqlx::query!(
                             "SELECT id FROM collection_log_entries 
@@ -258,7 +256,7 @@ async fn process_dink_event(dink_handler: DinkHandler, data: DinkPayload, dink_f
                             description = format!("Got a new collection log item:\n**{}**!", search_link(item_name.clone()));
                             //Now that we know for sure the item is valid we can build the embed
 
-                            let percentage = item.percentage.clone().unwrap_or_else(|| "?".to_string());
+                            let percentage = item.percentage.clone();
                             embed = embed.field("Global Clog Rate", format_value(format!("{}%", percentage)), true)
                             .field("Collection Log", format_value(format!("{}/{}",
                                 data.extra.completed_entries.unwrap_or_default(),

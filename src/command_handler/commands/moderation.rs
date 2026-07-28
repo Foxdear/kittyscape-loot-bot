@@ -81,16 +81,16 @@ pub async fn handle_recalculate( //Big red button
         let mut clog_query_separated = clog_query.separated(", ");
         for (i, record) in item_records.iter().enumerate() {
 
-            clog_query_separated.push(format!("\"{}\"", record.item_name.clone().unwrap()));
+            clog_query_separated.push(format!("\"{}\"", record.item_name.clone()));
 
             let old_points: i64 = record.highest_points;
             item_vector.push(ItemData {
                 item_id: record.item_id,
-                item_name: record.item_name.clone().unwrap(),
-                percentage: record.percentage.clone().unwrap().parse::<f64>().unwrap(),
-                clamp: if record.clamp == 1 && record.whitelist == Some(0) { true } else { false },
+                item_name: record.item_name.clone(),
+                percentage: record.percentage.clone().parse::<f64>().unwrap(),
+                clamp: if record.clamp == 1 && record.whitelist == 0i64 { true } else { false },
                 old_points: old_points,
-                points: clog_manager.calculate_points(record.item_name.clone().unwrap().as_str()).await.unwrap(),
+                points: clog_manager.calculate_points(record.item_name.clone().as_str()).await.unwrap(),
                 affected: 0,
             }); 
         }
