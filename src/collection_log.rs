@@ -278,7 +278,7 @@ impl CollectionLogManager<> {
     }
 
     //For Dink we do this by item id instead because it's more reliable
-    pub async fn calculate_points_dink(&self, item_id: i32) -> Option<i64> {
+    pub async fn calculate_points_dink(&self, item_id: i64) -> Option<i64> {
         let item_record = sqlx::query!(
             "SELECT * FROM v_item_data WHERE item_id = ? ORDER BY item_id",
             item_id

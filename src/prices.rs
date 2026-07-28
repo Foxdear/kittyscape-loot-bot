@@ -152,4 +152,17 @@ impl PriceManager {
             .or(mapping.high_alch)
             .unwrap_or(0.0).round() as i64)
     }
+
+    pub async fn get_item_id_price(&self, id: &i64) -> Option<i64> {
+        let data = self.data.read().await;
+        
+        // Get the latest price
+        let price = data.latest_prices.get(&id)?;
+        
+        // Use the lowest available price, defaulting to high alch value if available, or 0 if not
+        // Can't currently include high alch in this because it's behind the mapping
+        Some(price.low
+            .or(price.high)
+            .unwrap_or(0.0).round() as i64)
+    }
 } 

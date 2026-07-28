@@ -27,7 +27,7 @@ use crate::command_handler::utils;
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 struct DinkItem {
-    id: i32,
+    id: i64,
     quantity: i64,
     price_each: i64,
     name: String,
@@ -49,7 +49,7 @@ struct DinkExtra {
     duplicate: Option<bool>,
     // Clog category
     item_name: Option<String>,
-    item_id: Option<i32>,
+    item_id: Option<i64>,
     price: Option<i64>,
     completed_entries: Option<i32>,
     total_entries: Option<i32>,
@@ -312,7 +312,11 @@ async fn process_dink_event(dink_handler: DinkHandler, data: DinkPayload, dink_f
                     let mut valuable: Option<DinkItem> = None;
                     let mut best: i64 = 0;
                     for (_i, item) in items.iter().enumerate() {
-                        let value = item.quantity * item.price_each;
+                        //The number might be low depending on the users RuneLite settings (shop sell price instead of GE price), so get more reliable numbers
+                        //Alternatively:
+                        //let price = item.price_each.max(dink_handler.price_manager.get_item_id_price(&item.id).await.unwrap_or(0i64));
+                        let price = dink_handler.price_manager.get_item_id_price(&item.id).await.unwrap_or(0);
+                        let value = item.quantity * price;
                         //Annoyingly even if an item is in the denylist, it's still sent if we get other drop data, just with DENYLIST criteria
                         if value >= 100_000 && value > best && !item.criteria.contains(&"DENYLIST".to_string()) {
                             valuable = Some(item.clone());
@@ -503,7 +507,7 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
 /// enables PRAGMA foreign_keys by default), so the upsert has to happen before that insert too,
 /// or it fails silently right along with the points update.
 /// Returns (points awarded, user's new points total).
-async fn dink_clog(handler: &DinkHandler, item_id: i32, name: String, discord_id: String, user_name: &str) -> (i64, i64) {
+async fn dink_clog(handler: &DinkHandler, item_id: i64, name: String, discord_id: String, user_name: &str) -> (i64, i64) {
 
     let points = handler.collection_log_manager.calculate_points_dink(item_id).await.unwrap_or(0);
 
@@ -530,7 +534,7 @@ async fn dink_clog(handler: &DinkHandler, item_id: i32, name: String, discord_id
 /// touched, unlike the /drop command - /stats and /leaderboard both read it directly), then
 /// awards points through `rank_manager::add_points` (see dink_clog for why).
 /// Returns the user's new points total.
-async fn dink_drop(handler: &DinkHandler, item_id: i32, name: String, value: i64, discord_id: String, user_name: &str) -> i64 {
+async fn dink_drop(handler: &DinkHandler, item_id: i64, name: String, value: i64, discord_id: String, user_name: &str) -> i64 {
 
     // Record the drop
     let _ = sqlx::query!(
