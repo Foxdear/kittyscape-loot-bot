@@ -18,7 +18,7 @@ use std::sync::Arc;
 use dotenvy::dotenv;
 use axum::{
     body::{Body, Bytes},
-    extract::{Request, Json, Query, Multipart, FromRequest},
+    extract::{Request, Json, Query, Multipart, FromRequest, Path},
     http::{header::CONTENT_TYPE, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -96,7 +96,14 @@ struct DinkFile {
     content: Bytes,
 }
 
-pub async fn dink_handler(Extension(handler): Extension<DinkHandler>, req: Request) -> Response {
+pub async fn dink_handler(Extension(handler): Extension<DinkHandler>, Path(token): Path<String>, req: Request) -> Response {
+    // The token is the only thing gating this endpoint - Dink can't send custom headers, so it
+    // has to live in the URL path itself. Distribute it only via the hosted, importable Dink
+    // config, not by hand. 404 (not 401) so the endpoint's existence isn't confirmed either way.
+    if token != handler.config.dink_webhook_token {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
     let Some(agent_str) = req.headers()
         .get("user-agent")
         .and_then(|v| v.to_str().ok())
@@ -178,8 +185,7 @@ pub async fn dink_handler(Extension(handler): Extension<DinkHandler>, req: Reque
 }
 
 async fn process_dink_event(dink_handler: DinkHandler, data: DinkPayload, dink_file: Option<DinkFile>) {
-    // Initialize config
-    let config = Config::from_env().unwrap();
+    let config = &dink_handler.config;
     let screenshot = dink_file.map(|f| CreateAttachment::bytes(f.content, f.file_name));
     let mut author = CreateEmbedAuthor::new(data.player_name.clone());
         if data.account_type.as_str() != "NORMAL" { //Mains don't have rights

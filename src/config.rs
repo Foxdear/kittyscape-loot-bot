@@ -3,11 +3,13 @@ use serenity::all::RoleId;
 use serenity::model::id::ChannelId;
 use serenity::prelude::TypeMapKey;
 
+#[derive(Clone)]
 pub struct Config {
     pub mod_channel_id: ChannelId,
     pub log_channel_id: ChannelId,
     pub runelite_channel_id: Option<ChannelId>,
     pub rank_request_channel_id: Option<ChannelId>,
+    pub dink_webhook_token: String,
 }
 
 impl Config {
@@ -40,11 +42,16 @@ impl Config {
             Err(_) => None
         };
 
+        // Shared secret baked into the /dink/{token} webhook path, since Dink can't send
+        // custom headers - this is the only thing gating that endpoint from the open internet
+        let dink_webhook_token = env::var("DINK_WEBHOOK_TOKEN")?;
+
         Ok(Self {
             mod_channel_id: ChannelId::new(mod_channel_id),
             log_channel_id: ChannelId::new(log_channel_id),
             runelite_channel_id,
             rank_request_channel_id,
+            dink_webhook_token,
         })
     }
 }

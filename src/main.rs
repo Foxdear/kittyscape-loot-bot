@@ -43,6 +43,7 @@ struct DinkHandler {
     runescape_tracker: Arc<runescape_tracker::RunescapeTracker>,
     ctx: Context,
     guild_id: GuildId,
+    config: Config,
 }
 
 #[async_trait]
@@ -97,6 +98,11 @@ impl EventHandler for Handler {
             return;
         };
 
+        let config = {
+            let data = ctx.data.read().await;
+            data.get::<ConfigKey>().expect("Config missing from client data").clone()
+        };
+
         // tokio::spawn creates a new green thread that can run in parallel with the rest of
         // the application.
         let handler = DinkHandler {
@@ -106,10 +112,12 @@ impl EventHandler for Handler {
             runescape_tracker: Arc::clone(&self.runescape_tracker),
             ctx,
             guild_id,
+            config,
         };
         tokio::spawn(async move {
-            // build our application with a single route
-            let app = Router::new().route("/dink", post(dink_listener::dink_handler))
+            // build our application with a single route, gated by a shared secret in the path -
+            // Dink can't send custom headers, so the token has to live in the URL itself
+            let app = Router::new().route("/dink/{token}", post(dink_listener::dink_handler))
                 .route("/", get(|| async { "Hello, World!" }))
                 .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
                 .layer(Extension(handler));
