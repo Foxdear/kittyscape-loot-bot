@@ -97,6 +97,10 @@ impl EventHandler for Handler {
             error!("Bot is not in any guild - not starting the Dink listener");
             return;
         };
+        if guilds.len() > 1 {
+            error!("Bot is in {} guilds; picking {} for the Dink listener, which will misidentify members if that's the wrong one", guilds.len(), guild_id);
+        }
+        info!("Dink listener resolving members against guild {}", guild_id);
 
         let config = {
             let data = ctx.data.read().await;
