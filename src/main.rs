@@ -42,6 +42,7 @@ struct DinkHandler {
     collection_log_manager: Arc<collection_log::CollectionLogManager>,
     runescape_tracker: Arc<runescape_tracker::RunescapeTracker>,
     ctx: Context,
+    guild_id: GuildId,
 }
 
 #[async_trait]
@@ -85,8 +86,16 @@ impl EventHandler for Handler {
         // Start price updates
         Arc::clone(&self.price_manager).start_price_updates().await;
     }
-    async fn cache_ready(&self, ctx: Context, _guilds: Vec<GuildId>) {
+    async fn cache_ready(&self, ctx: Context, guilds: Vec<GuildId>) {
         info!("Cache built successfully!");
+
+        // This bot only ever operates in one server (mod_channel_id, log_channel_id etc. are
+        // all single-guild already), so rather than asking for a GUILD_ID env var that has to be
+        // kept in sync by hand, just take the one guild serenity's cache already knows about.
+        let Some(guild_id) = guilds.first().copied() else {
+            error!("Bot is not in any guild - not starting the Dink listener");
+            return;
+        };
 
         // tokio::spawn creates a new green thread that can run in parallel with the rest of
         // the application.
@@ -96,6 +105,7 @@ impl EventHandler for Handler {
             collection_log_manager: Arc::clone(&self.collection_log_manager),
             runescape_tracker: Arc::clone(&self.runescape_tracker),
             ctx,
+            guild_id,
         };
         tokio::spawn(async move {
             // build our application with a single route

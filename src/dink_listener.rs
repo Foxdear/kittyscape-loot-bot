@@ -9,7 +9,7 @@ use serenity::all::{
 use std::future::IntoFuture as _;
 use serenity::async_trait;
 use serenity::prelude::*;
-use serenity::all::{CreateMessage, CreateEmbed, Member};
+use serenity::all::{CreateMessage, CreateEmbed, Member, GuildId, ChannelId};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use std::env;
@@ -152,7 +152,7 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
         .author(author)
         .image(format!("attachment://{}", screenshot.filename))
         .timestamp(Timestamp::now());
-        let discord_member = identify_user(data.clone(), dink_handler.db.clone(), dink_handler.ctx.clone()).await;
+        let discord_member = identify_user(data.clone(), dink_handler.db.clone(), dink_handler.ctx.clone(), dink_handler.guild_id, config.runelite_channel_id).await;
         if discord_member.is_some() && !data.seasonal_world {
             //If we can't find the user an account belongs to, they probably shouldn't be getting posted
             //Also don't care about leagues (for now)
@@ -365,11 +365,8 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
 fn format_value (value: String) -> String {
     format!("```fix\n{value}```")
 }
-async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context) -> Option<Member> {
-    // Initialize config
-    let config = Config::from_env().ok()?;
-
-    let mut member: Option<Member> = None; 
+async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_id: GuildId, channel_id: Option<ChannelId>) -> Option<Member> {
+    let mut member: Option<Member> = None;
 
     //Okay who are we dealing with here
     //Check username and hash (if we can't find one we'll find the other)
@@ -394,7 +391,7 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context) -> Opti
             username, hash, user.id)
             .execute(&db).await;
         }
-        let member_data = Member::convert(ctx, Some(config.guild_id), config.runelite_channel_id, &user.discord_id.as_str()).await;
+        let member_data = Member::convert(ctx, Some(guild_id), channel_id, &user.discord_id.as_str()).await;
         if member_data.is_ok() {
             member = member_data.ok();
         }
@@ -404,7 +401,7 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context) -> Opti
     else if data.discord_user.is_some() {
         //Is this person actually in our server?
         let discord_id = data.discord_user.unwrap().id;
-        let member_data = Member::convert(ctx.clone(), Some(config.guild_id), config.runelite_channel_id, discord_id.as_str()).await;
+        let member_data = Member::convert(ctx.clone(), Some(guild_id), channel_id, discord_id.as_str()).await;
         if member_data.is_ok() {
             //If they're in the server, and using the plugin, we assume they WANT to be tracked
             //We'll just help them automagically
