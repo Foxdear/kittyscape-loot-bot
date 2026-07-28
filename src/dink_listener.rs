@@ -1,32 +1,20 @@
 use axum::Extension;
-use axum::http::HeaderMap;
 use serenity::all::ArgumentConvert;
 use serenity::all::CreateEmbedAuthor;
 use serenity::all::CreateEmbedFooter;
 use serenity::all::{
     CreateAttachment, Timestamp
 };
-use std::future::IntoFuture as _;
-use serenity::async_trait;
 use serenity::prelude::*;
 use serenity::all::{CreateMessage, CreateEmbed, Member, GuildId, ChannelId};
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
-use std::env;
-use std::fs::File;
-use std::sync::Arc;
-use dotenvy::dotenv;
 use axum::{
-    body::{Body, Bytes},
-    extract::{Request, Json, Query, Multipart, FromRequest, Path},
+    body::Bytes,
+    extract::{Request, Multipart, FromRequest, Path},
     http::{header::CONTENT_TYPE, StatusCode},
-    middleware::{self, Next},
     response::{IntoResponse, Response},
 };
-use tracing::{error, info, debug};
-use crate::command_handler::{PriceManagerKey, CollectionLogManagerKey};
-use crate::config::Config;
-use crate::runescape_tracker::RunescapeTrackerKey;
+use tracing::{error, debug};
 use crate::DinkHandler;
 use serde::Deserialize;
 use crate::logger;
