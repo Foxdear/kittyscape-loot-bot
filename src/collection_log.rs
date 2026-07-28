@@ -291,7 +291,7 @@ impl CollectionLogManager<> {
     }
 
     pub async fn points(percentage: Option<String>, whitelist: Option<i64>, clamp: i32) -> Option<i64> {
-        let completion_rate = percentage.unwrap().parse::<f64>().unwrap();
+        let completion_rate = percentage?.parse::<f64>().ok()?;
         // Multi-tiered point calculation
         let points = if completion_rate <= 5.0 {
             // Tier 3: Mega-rare items (≤5%)
