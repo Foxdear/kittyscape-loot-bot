@@ -131,38 +131,8 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
             }
         }
 
-        //Test data that can be used to force specific values
-        let test_data = serde_json::json!({
-            "content": "Text message as set by the user",
-            "extra": {
-                "items": [
-                {
-                    "id": 22327,
-                    "quantity": 1,
-                    "priceEach": 9041814,
-                    "name": "Justiciar chestguard",
-                    "criteria": ["VALUE"],
-                    "rarity": 0.1666666666666667
-                }
-                ],
-                "source": "Tombs of Amascut",
-                "party": ["%USERNAME%", "another RSN", "yet another RSN"],
-                "category": "EVENT",
-                "killCount": 60,
-                "rarestProbability": 0.001,
-                "npcId": null
-            },
-            "type": "LOOT",
-            "playerName": "multiboob",
-            "accountType": "IRONMAN",
-            "seasonalWorld": false,
-            "dinkAccountHash": "abcdefghijklmnopqrstuvwxyz1234abcdefghijklmnopqrstuvwxyz",
-            "embeds": []
-            });
         debug!("Payload: {:#?}", payload_json);
         let data: DinkPayload = serde_json::from_slice(&payload_json).unwrap();
-        //let data: DinkPayload = serde_json::from_value(test_data).unwrap();
-        //info!("Type: {:#?}", data.r#type);
         let screenshot = CreateAttachment::bytes(dink_file.content, dink_file.file_name);
         let mut author = CreateEmbedAuthor::new(data.player_name.clone());
         if data.account_type.as_str() != "NORMAL" { //Mains don't have rights
@@ -294,7 +264,7 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                     for (_i, item) in items.iter().enumerate() {
                         let value = item.quantity * item.price_each;
                         //Annoyingly even if an item is in the denylist, it's still sent if we get other drop data, just with DENYLIST criteria
-                        if value > 0 && value > best && !item.criteria.contains(&"DENYLIST".to_string()) { //Change this back to 100_000
+                        if value >= 100_000 && value > best && !item.criteria.contains(&"DENYLIST".to_string()) {
                             valuable = Some(item.clone());
                             best = value;
                         }
