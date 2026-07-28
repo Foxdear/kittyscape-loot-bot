@@ -9,42 +9,24 @@ mod dink_listener;
 
 use anyhow::Result;
 use axum::Extension;
-use axum::RequestExt;
 use axum::extract::DefaultBodyLimit;
-use axum::routing::post;
-use serde_json::error::Category::Data;
-use serenity::all::ChannelAction::Create;
-use serenity::all::Http;
+use axum::routing::{get, post};
+use axum::Router;
 use serenity::all::{
-    CreateAttachment, GatewayIntents, Interaction, Message, Ready, GuildId
+    GatewayIntents, Interaction, Message, Ready, GuildId
 };
-use sqlx::Sqlite;
 use std::future::IntoFuture as _;
 use serenity::async_trait;
 use serenity::prelude::*;
-use serenity::all::CreateMessage;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use std::env;
-use std::fs::File;
 use std::sync::Arc;
 use dotenvy::dotenv;
-use axum::{
-    body::{Body, Bytes},
-    extract::{Request, Json, Query, Multipart},
-    http::{header::CONTENT_TYPE, StatusCode},
-    middleware::{self, Next},
-    response::{IntoResponse, Response},
-    routing::get,
-    Router,
-    Form,
-};
-use serde_json::Value;
-use tracing::{error, info, debug};
+use tracing::{error, info};
 use command_handler::{PriceManagerKey, CollectionLogManagerKey};
 use config::{Config, ConfigKey};
 use runescape_tracker::RunescapeTrackerKey;
-use serde::Deserialize;
 
 struct Handler {
     db: SqlitePool,
@@ -60,6 +42,8 @@ struct DinkHandler {
     collection_log_manager: Arc<collection_log::CollectionLogManager>,
     runescape_tracker: Arc<runescape_tracker::RunescapeTracker>,
     ctx: Context,
+    guild_id: GuildId,
+    config: Config,
 }
 
 #[async_trait]
@@ -103,8 +87,25 @@ impl EventHandler for Handler {
         // Start price updates
         Arc::clone(&self.price_manager).start_price_updates().await;
     }
-    async fn cache_ready(&self, ctx: Context, _guilds: Vec<GuildId>) {
-        println!("Cache built successfully!");
+    async fn cache_ready(&self, ctx: Context, guilds: Vec<GuildId>) {
+        info!("Cache built successfully!");
+
+        // This bot only ever operates in one server (mod_channel_id, log_channel_id etc. are
+        // all single-guild already), so rather than asking for a GUILD_ID env var that has to be
+        // kept in sync by hand, just take the one guild serenity's cache already knows about.
+        let Some(guild_id) = guilds.first().copied() else {
+            error!("Bot is not in any guild - not starting the Dink listener");
+            return;
+        };
+        if guilds.len() > 1 {
+            error!("Bot is in {} guilds; picking {} for the Dink listener, which will misidentify members if that's the wrong one", guilds.len(), guild_id);
+        }
+        info!("Dink listener resolving members against guild {}", guild_id);
+
+        let config = {
+            let data = ctx.data.read().await;
+            data.get::<ConfigKey>().expect("Config missing from client data").clone()
+        };
 
         // tokio::spawn creates a new green thread that can run in parallel with the rest of
         // the application.
@@ -113,11 +114,14 @@ impl EventHandler for Handler {
             price_manager: Arc::clone(&self.price_manager),
             collection_log_manager: Arc::clone(&self.collection_log_manager),
             runescape_tracker: Arc::clone(&self.runescape_tracker),
-            ctx: ctx,
+            ctx,
+            guild_id,
+            config,
         };
         tokio::spawn(async move {
-            // build our application with a single route
-            let app = Router::new().route("/dink", post(dink_listener::dink_handler).get(dink_listener::dink_handler))
+            // build our application with a single route, gated by a shared secret in the path -
+            // Dink can't send custom headers, so the token has to live in the URL itself
+            let app = Router::new().route("/dink/{token}", post(dink_listener::dink_handler))
                 .route("/", get(|| async { "Hello, World!" }))
                 .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
                 .layer(Extension(handler));
@@ -125,7 +129,7 @@ impl EventHandler for Handler {
             let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
             let server = axum::serve(listener, app);
             if let Err(why) = server.into_future().await {
-                println!("Err with server: {:?}", why);
+                error!("Err with server: {:?}", why);
             }
         });
     }
@@ -180,7 +184,7 @@ async fn main() -> Result<()> {
     }
 
     if let Err(why) = client.start().await {
-        println!("Err with client: {:?}", why);
+        error!("Err with client: {:?}", why);
     }
 
     Ok(())

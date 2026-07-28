@@ -1,35 +1,24 @@
 use axum::Extension;
-use axum::http::HeaderMap;
 use serenity::all::ArgumentConvert;
 use serenity::all::CreateEmbedAuthor;
 use serenity::all::CreateEmbedFooter;
 use serenity::all::{
     CreateAttachment, Timestamp
 };
-use std::future::IntoFuture as _;
-use serenity::async_trait;
 use serenity::prelude::*;
-use serenity::all::{CreateMessage, CreateEmbed, Member};
-use sqlx::sqlite::SqlitePoolOptions;
+use serenity::all::{CreateMessage, CreateEmbed, Member, GuildId, ChannelId};
 use sqlx::SqlitePool;
-use std::env;
-use std::fs::File;
-use std::sync::Arc;
-use dotenvy::dotenv;
 use axum::{
-    body::{Body, Bytes},
-    extract::{Request, Json, Query, Multipart},
+    body::Bytes,
+    extract::{Request, Multipart, FromRequest, Path},
     http::{header::CONTENT_TYPE, StatusCode},
-    middleware::{self, Next},
     response::{IntoResponse, Response},
 };
-use tracing::{error, info, debug};
-use crate::command_handler::{PriceManagerKey, CollectionLogManagerKey};
-use crate::config::Config;
-use crate::runescape_tracker::RunescapeTrackerKey;
+use tracing::{error, debug};
 use crate::DinkHandler;
 use serde::Deserialize;
 use crate::logger;
+use crate::rank_manager;
 use crate::command_handler::utils;
 
 // https://github.com/pajlads/DinkPlugin/blob/master/docs/json-examples.md
@@ -95,76 +84,98 @@ struct DinkFile {
     content: Bytes,
 }
 
-pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderMap, mut multipart: Multipart) {
+pub async fn dink_handler(Extension(handler): Extension<DinkHandler>, Path(token): Path<String>, req: Request) -> Response {
+    // The token is the only thing gating this endpoint - Dink can't send custom headers, so it
+    // has to live in the URL path itself. Distribute it only via the hosted, importable Dink
+    // config, not by hand. 404 (not 401) so the endpoint's existence isn't confirmed either way.
+    if token != handler.config.dink_webhook_token {
+        return StatusCode::NOT_FOUND.into_response();
+    }
 
-    let agent = headers.get("user-agent").unwrap().clone();
-    let agent_str = agent.to_str().unwrap();
+    let Some(agent_str) = req.headers()
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
     // This wouldn't scale well but these are the only two we need to worry about
     // Check user-agent to minimize bad requests
-    if agent_str.starts_with("RuneLite/") || agent_str.starts_with("HDOS/") {
-        // Initialize config
-        let config = Config::from_env().unwrap();
-        // let mut data: DinkPayload;
-        // let mut screenshot: CreateAttachment;
-        let mut dink_file = DinkFile {
-            file_name: "None".to_string(),
-            content: Bytes::new(),
-        };
-        let mut payload_json = Bytes::new();
+    if !(agent_str.starts_with("RuneLite/") || agent_str.starts_with("HDOS/")) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
 
-        while let Some(field) = multipart.next_field().await.unwrap() {
-            let name = field.name().unwrap();
-            match name {
+    let content_type = req.headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    // Dink only sends multipart/form-data when a screenshot is attached; if there's none, it
+    // POSTs a plain application/json body instead. Both need to be accepted, or every
+    // screenshot-less notification gets rejected before it ever reaches the logic below.
+    let (payload_json, dink_file): (Bytes, Option<DinkFile>) = if content_type.starts_with("multipart/form-data") {
+        let mut multipart = match Multipart::from_request(req, &()).await {
+            Ok(m) => m,
+            Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        };
+
+        let mut payload_json: Option<Bytes> = None;
+        let mut dink_file: Option<DinkFile> = None;
+
+        loop {
+            let field = match multipart.next_field().await {
+                Ok(Some(field)) => field,
+                Ok(None) => break,
+                Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+            };
+            let field_name = field.name().unwrap_or("").to_string();
+            match field_name.as_str() {
                 "payload_json" => {
                     debug!("Found payload");
-                    payload_json = field.bytes().await.unwrap();
-                    debug!("Payload length: {}", payload_json.len());
+                    payload_json = field.bytes().await.ok();
                 }
                 "file" => {
                     debug!("Found screenshot");
-                    //info!("Field info: {:#?}", field);
-                    dink_file.file_name = field.file_name().unwrap().to_string();
-                    dink_file.content = field.bytes().await.unwrap();
+                    let file_name = field.file_name().unwrap_or("screenshot.png").to_string();
+                    if let Ok(content) = field.bytes().await {
+                        dink_file = Some(DinkFile { file_name, content });
+                    }
                 }
-                _ => {error!("Error handling field: {:?}", name)}
-                
+                other => error!("Error handling field: {:?}", other),
             }
         }
 
-        //Test data that can be used to force specific values
-        let test_data = serde_json::json!({
-            "content": "Text message as set by the user",
-            "extra": {
-                "items": [
-                {
-                    "id": 22327,
-                    "quantity": 1,
-                    "priceEach": 9041814,
-                    "name": "Justiciar chestguard",
-                    "criteria": ["VALUE"],
-                    "rarity": 0.1666666666666667
-                }
-                ],
-                "source": "Tombs of Amascut",
-                "party": ["%USERNAME%", "another RSN", "yet another RSN"],
-                "category": "EVENT",
-                "killCount": 60,
-                "rarestProbability": 0.001,
-                "npcId": null
-            },
-            "type": "LOOT",
-            "playerName": "multiboob",
-            "accountType": "IRONMAN",
-            "seasonalWorld": false,
-            "dinkAccountHash": "abcdefghijklmnopqrstuvwxyz1234abcdefghijklmnopqrstuvwxyz",
-            "embeds": []
-            });
-        debug!("Payload: {:#?}", payload_json);
-        let data: DinkPayload = serde_json::from_slice(&payload_json).unwrap();
-        //let data: DinkPayload = serde_json::from_value(test_data).unwrap();
-        //info!("Type: {:#?}", data.r#type);
-        let screenshot = CreateAttachment::bytes(dink_file.content, dink_file.file_name);
-        let mut author = CreateEmbedAuthor::new(data.player_name.clone());
+        let Some(payload_json) = payload_json else {
+            return StatusCode::BAD_REQUEST.into_response();
+        };
+        (payload_json, dink_file)
+    } else if content_type.starts_with("application/json") {
+        match Bytes::from_request(req, &()).await {
+            Ok(bytes) => (bytes, None),
+            Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        }
+    } else {
+        return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
+    };
+
+    debug!("Payload length: {}", payload_json.len());
+    let data: DinkPayload = match serde_json::from_slice(&payload_json) {
+        Ok(data) => data,
+        Err(e) => {
+            error!("Failed to parse Dink payload: {:?}", e);
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+
+    process_dink_event(handler, data, dink_file).await;
+    StatusCode::OK.into_response()
+}
+
+async fn process_dink_event(dink_handler: DinkHandler, data: DinkPayload, dink_file: Option<DinkFile>) {
+    let config = &dink_handler.config;
+    let screenshot = dink_file.map(|f| CreateAttachment::bytes(f.content, f.file_name));
+    let mut author = CreateEmbedAuthor::new(data.player_name.clone());
         if data.account_type.as_str() != "NORMAL" { //Mains don't have rights
             let icon = match data.account_type.as_str() {
                 "IRONMAN" => "Ironman_chat_badge.png",
@@ -179,28 +190,29 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
         }
         let mut embed = CreateEmbed::new()
         .author(author)
-        .image(format!("attachment://{}", screenshot.filename))
         .timestamp(Timestamp::now());
-        let discord_member = identify_user(data.clone(), dink_handler.db.clone(), dink_handler.ctx.clone()).await;
-        if discord_member.is_some() && !data.seasonal_world {
+        if let Some(ref shot) = screenshot {
+            embed = embed.image(format!("attachment://{}", shot.filename));
+        }
+        let Some(member) = identify_user(data.clone(), dink_handler.db.clone(), dink_handler.ctx.clone(), dink_handler.guild_id, config.runelite_channel_id).await else {
             //If we can't find the user an account belongs to, they probably shouldn't be getting posted
-            //Also don't care about leagues (for now)
-            let member = discord_member.unwrap();
+            let _ = logger::log_generic(
+                &dink_handler.ctx,
+                &format!("UNKNOWN USER: Someone I couldn't find in the discord server tried to do something: RSN {} sent something with Dink of type {}", data.player_name, data.notif_type)
+            ).await;
+            return;
+        };
+        if data.seasonal_world {
+            //Don't care about leagues (for now)
+            debug!("Ignoring Dink event from seasonal/league world for {}", data.player_name);
+            return;
+        }
+        {
             let footer = CreateEmbedFooter::new(member.display_name())
             .icon_url(member.face());
             embed = embed.footer(footer);
 
             let discord_id = member.user.id.to_string();
-
-            let user_record = sqlx::query!(
-                "SELECT * FROM users 
-                WHERE discord_id = ?",
-                discord_id
-            )
-            .fetch_one(&dink_handler.db)
-            .await
-            .ok()
-            .unwrap();
 
             let mut sendable = false;
 
@@ -208,16 +220,20 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                 "COLLECTION" => {
                     sendable = true;
                     debug!("Received collection log");
-                    let id = data.extra.item_id.clone().unwrap();
+                    let Some(id) = data.extra.item_id else {
+                        debug!("COLLECTION event with no itemId, dropping");
+                        return;
+                    };
                     let item = sqlx::query!("SELECT * FROM v_item_data WHERE item_id = ?", id)
                     .fetch_one(&dink_handler.db)
                     .await
                     .ok();
                     //Initiate
                     let description: String;
-                    if item.is_some() {
-                        let item = item.unwrap();
-                        let item_name = item.preferred_name.unwrap();
+                    if let Some(item) = item {
+                        let item_name = item.preferred_name.clone()
+                            .or_else(|| item.item_name.clone())
+                            .unwrap_or_else(|| "an unknown item".to_string());
                         //Do they have this item recorded already?
                         if let Ok(Some(_)) = sqlx::query!(
                             "SELECT id FROM collection_log_entries 
@@ -238,12 +254,15 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                                 &format!("{} received collection log item they already had: {}", data.player_name, item_name)
                             ).await;
                         } else {
-                            let points = dink_clog(&dink_handler, id, item_name.clone(), discord_id.clone()).await;
+                            let (points, new_total) = dink_clog(&dink_handler, id, item_name.clone(), discord_id.clone(), &member.display_name()).await;
                             description = format!("Got a new collection log item:\n**{}**!", search_link(item_name.clone()));
                             //Now that we know for sure the item is valid we can build the embed
-                            
-                            embed = embed.field("Global Clog Rate", format_value(format!("{}%", item.percentage.unwrap())), true)
-                            .field("Collection Log", format_value(format!("{}/{}", data.extra.completed_entries.unwrap(), data.extra.total_entries.unwrap())), true)
+
+                            let percentage = item.percentage.clone().unwrap_or_else(|| "?".to_string());
+                            embed = embed.field("Global Clog Rate", format_value(format!("{}%", percentage)), true)
+                            .field("Collection Log", format_value(format!("{}/{}",
+                                data.extra.completed_entries.unwrap_or_default(),
+                                data.extra.total_entries.unwrap_or_default())), true)
                             .field("", "", false);
 
                             if data.extra.dropper_name.is_some() || data.extra.dropper_kill_count.is_some() {
@@ -253,7 +272,7 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                             }
 
                             embed = embed.field("Points Added", format_value(format!("+{}", points)), true)
-                            .field("Points Total", format_value(user_record.points.to_string()), true);
+                            .field("Points Total", format_value(new_total.to_string()), true);
                             
                             let _ = logger::log_action(
                                 &dink_handler.ctx,
@@ -265,12 +284,12 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                         
                     }
                     else {
-                        let item_name = data.extra.item_name.unwrap();
+                        let item_name = data.extra.item_name.clone().unwrap_or_else(|| "an unknown item".to_string());
                         //If we don't have a record for it, it's probably new
                         //We don't have data so we kinda just have to abandon ship
                         description = format!("Got a new collection log item:\n**{}**!\n\nBut, ummm... I don't know what that is yet... sorry...", search_link(item_name.clone()));
                         //We can still add the record but no points will be added
-                        dink_clog(&dink_handler, id, item_name.clone(), discord_id.clone()).await;
+                        dink_clog(&dink_handler, id, item_name.clone(), discord_id.clone(), &member.display_name()).await;
                         let _ = logger::log_action(
                                 &dink_handler.ctx,
                                 &discord_id,
@@ -288,43 +307,44 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                     //Part of the reason for this update is because RDT uncut sapphires (for example) are technically ~1/170
                     //Technically *rare* when some valuable drops are 1/128, but when people had their drop plugins set improperly we'd get notified for basically everything
                     //Dink does not have rarity set for every drop (according to docs), so we'll just say if it's high enough value it's fine
+                    let Some(items) = data.extra.items else {
+                        debug!("LOOT event with no items, dropping");
+                        return;
+                    };
                     let mut valuable: Option<DinkItem> = None;
-                    let items = data.extra.items.unwrap();
                     let mut best: i64 = 0;
                     for (_i, item) in items.iter().enumerate() {
                         let value = item.quantity * item.price_each;
                         //Annoyingly even if an item is in the denylist, it's still sent if we get other drop data, just with DENYLIST criteria
-                        if value > 0 && value > best && !item.criteria.contains(&"DENYLIST".to_string()) { //Change this back to 100_000
+                        if value >= 100_000 && value > best && !item.criteria.contains(&"DENYLIST".to_string()) {
                             valuable = Some(item.clone());
                             best = value;
                         }
                     }
-                    if valuable.is_some() {
+                    if let Some(item) = valuable {
                         //Now that we know it's valuable, we're okay to send
                         sendable = true;
-                        let item = valuable.unwrap();
                         let points = best / 100_000;
-                        let source = data.extra.source.unwrap();
+                        let source = data.extra.source.clone().unwrap_or_else(|| "an unknown source".to_string());
                         let description = if item.quantity > 1 {
                             format!("Got {}x {} from {}!", item.quantity, search_link(item.name.clone()), search_link(source))
                         }
                         else {
                             format!("Got {} from {}!", search_link(item.name.clone()), search_link(source))
                         };
-                        if item.rarity.is_some() {
-                            let rarity_val = item.rarity.unwrap();
+                        if let Some(rarity_val) = item.rarity {
                             let denom = (1.0 / rarity_val).round();
                             let rarity = rarity_val * 100.0;
                             embed = embed.field("Rarity (approx)", format!("```glsl\n# 1/{} ({:.2}%)```", denom, rarity), true);
                         }
+                        let new_total = dink_drop(&dink_handler, item.id, item.name.clone(), best, discord_id.clone(), &member.display_name()).await;
                         embed = embed.description(description)
                         .field("GE Price", format_value(utils::format_gp(best)), true)
                         .field("", "", false)
                         .field("Points Added", format_value(format!("+{}", points)), true)
-                        .field("Points Total", format_value(user_record.points.to_string()), true)
+                        .field("Points Total", format_value(new_total.to_string()), true)
                         .thumbnail(format!("https://static.runelite.net/cache/item/icon/{}.png", item.id));
-                        dink_drop(&dink_handler, item.id, item.name.clone(), best, discord_id.clone()).await;
-                        
+
                         // Log the auto-added drop to the bot log channel
                         let _ = crate::logger::log_action(
                             &dink_handler.ctx,
@@ -347,17 +367,13 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                     sendable = true;
                     debug!("Received pet");
                     //We don't process this for points (yet) so it's pretty simple, relatively
-                    let description = match data.extra.duplicate.unwrap() {
-                        true => {
-                            "You have a funny feeling like you would've been followed..."
-                        }
-                        false => {
-                            "You have a funny feeling like you're being followed..."
-                        }
+                    let description = if data.extra.duplicate.unwrap_or(false) {
+                        "You have a funny feeling like you would've been followed..."
+                    } else {
+                        "You have a funny feeling like you're being followed..."
                     };
                     embed = embed.description(description);
-                    if data.extra.pet_name.is_some() { //Is the name set?
-                        let pet_name = data.extra.pet_name.unwrap();
+                    if let Some(pet_name) = data.extra.pet_name.clone() { //Is the name set?
                         embed = embed.field("Pet", format_value(pet_name.clone()), true);
                         //Check db for item_id (Dink doesn't give this for pets)
                         let pet_row = sqlx::query!(
@@ -366,12 +382,12 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
                         )
                         .fetch_one(&dink_handler.db)
                         .await;
-                        if pet_row.is_ok() {
-                            let pet_id = pet_row.unwrap().item_id;
+                        if let Ok(pet_row) = pet_row {
+                            let pet_id = pet_row.item_id;
                             embed = embed.thumbnail(format!("https://static.runelite.net/cache/item/icon/{pet_id}.png"));
                         }
-                        if data.extra.milestone.is_some() { //Do we have a milestone?
-                            embed = embed.field("Milestone", format_value(data.extra.milestone.unwrap()), true);
+                        if let Some(milestone) = data.extra.milestone.clone() { //Do we have a milestone?
+                            embed = embed.field("Milestone", format_value(milestone), true);
                         }
                     }
                 }
@@ -387,28 +403,26 @@ pub async fn dink_handler(dink_handler: Extension<DinkHandler>, headers: HeaderM
             }
             if sendable {
                 let builder = CreateMessage::new().add_embed(embed);
-
-                let _ = config.runelite_channel_id.unwrap().send_files(&dink_handler.ctx.http, [screenshot], builder).await;
+                let Some(channel_id) = config.runelite_channel_id else {
+                    error!("RUNELITE_CHANNEL_ID not configured, dropping Dink notification");
+                    return;
+                };
+                let send_result = match screenshot {
+                    Some(shot) => channel_id.send_files(&dink_handler.ctx.http, [shot], builder).await.map(|_| ()),
+                    None => channel_id.send_message(&dink_handler.ctx.http, builder).await.map(|_| ()),
+                };
+                if let Err(why) = send_result {
+                    error!("Failed to send Dink notification: {:?}", why);
+                }
             }
-            
         }
-        else {
-            let _ = logger::log_generic(
-                &dink_handler.ctx,
-                &format!("UNKNOWN USER: Someone I couldn't find in the discord server tried to do something: RSN {} sent something with Dink of type {}", data.player_name, data.notif_type)
-            ).await;
-        }
-    }  
 }
 //This function is so if you want to change the formatting on everything, you can ("fix" makes the text blue)
 fn format_value (value: String) -> String {
     format!("```fix\n{value}```")
 }
-async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context) -> Option<Member> {
-    // Initialize config
-    let config = Config::from_env().ok()?;
-
-    let mut member: Option<Member> = None; 
+async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_id: GuildId, channel_id: Option<ChannelId>) -> Option<Member> {
+    let mut member: Option<Member> = None;
 
     //Okay who are we dealing with here
     //Check username and hash (if we can't find one we'll find the other)
@@ -422,9 +436,8 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context) -> Opti
     .fetch_one(&db)
     .await;
     //Did we find anyone
-    if user.is_ok() {
+    if let Ok(user) = user {
         //Ok cool. Does all our info match?
-        let user = user.unwrap();
         if !(user.dink_hash == Some(hash.clone()) && user.runescape_name == username) {
             //Either we don't have a hash yet, or the username got changed
             let _ = sqlx::query!("UPDATE runescape_accounts
@@ -433,21 +446,21 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context) -> Opti
             username, hash, user.id)
             .execute(&db).await;
         }
-        let member_data = Member::convert(ctx, Some(config.guild_id), config.runelite_channel_id, &user.discord_id.as_str()).await;
-        if member_data.is_ok() {
-            member = member_data.ok();
+        let member_data = Member::convert(ctx, Some(guild_id), channel_id, &user.discord_id.as_str()).await;
+        if let Ok(member_found) = member_data {
+            member = Some(member_found);
         }
     }
     //Well who the fuck is this then
     //Do they have discord data in the notification?
-    else if data.discord_user.is_some() {
+    else if let Some(discord_user) = data.discord_user {
         //Is this person actually in our server?
-        let discord_id = data.discord_user.unwrap().id;
-        let member_data = Member::convert(ctx.clone(), Some(config.guild_id), config.runelite_channel_id, discord_id.as_str()).await;
-        if member_data.is_ok() {
+        let discord_id = discord_user.id;
+        let member_data = Member::convert(ctx.clone(), Some(guild_id), channel_id, discord_id.as_str()).await;
+        if let Ok(member_found) = member_data {
             //If they're in the server, and using the plugin, we assume they WANT to be tracked
             //We'll just help them automagically
-            member = member_data.ok();
+            member = Some(member_found);
 
             // Link RS name to Discord ID
             let _ = sqlx::query!(
@@ -472,9 +485,28 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context) -> Opti
     }
     member
 }
-async fn dink_clog(handler: &Extension<DinkHandler>, item_id: i32, name: String, discord_id: String) -> i64 {
-    let points = handler.collection_log_manager.calculate_points_dink(item_id).await;
-    let points = if points.is_some() { points.unwrap() } else { 0 };
+/// Records a Dink collection log entry and awards points (if any) through
+/// `rank_manager::add_points`, instead of a raw `UPDATE users`. That gets us three things for
+/// free: the `users` row is upserted before anything references it (a raw `UPDATE` on a
+/// nonexistent row is a silent no-op - the previous code assumed the row already existed, which
+/// isn't true for a brand-new user's first-ever event), rank-up/down notifications fire the same
+/// way they do for the /clog command, and the caller can show the real post-event points total
+/// instead of whatever was on hand before this event.
+/// collection_log_entries.discord_id also has a foreign key on users.discord_id (enforced - sqlx
+/// enables PRAGMA foreign_keys by default), so the upsert has to happen before that insert too,
+/// or it fails silently right along with the points update.
+/// Returns (points awarded, user's new points total).
+async fn dink_clog(handler: &DinkHandler, item_id: i32, name: String, discord_id: String, user_name: &str) -> (i64, i64) {
+    let _ = sqlx::query!(
+        "INSERT INTO users (discord_id, points, total_drops)
+         VALUES (?, 0, 0)
+         ON CONFLICT(discord_id) DO NOTHING",
+        discord_id
+    )
+    .execute(&handler.db)
+    .await;
+
+    let points = handler.collection_log_manager.calculate_points_dink(item_id).await.unwrap_or(0);
 
     // Record the collection log entry
     let _ = sqlx::query!(
@@ -487,24 +519,30 @@ async fn dink_clog(handler: &Extension<DinkHandler>, item_id: i32, name: String,
     .execute(&handler.db)
     .await;
 
-    if points > 0 {
-        // Update user points
-        let _ = sqlx::query!(
-            "UPDATE users 
-            SET points = points + ?
-            WHERE discord_id = ?",
-            points,
-            discord_id
-        )
-        .execute(&handler.db)
-        .await;
+    match rank_manager::add_points(&handler.ctx, &discord_id, user_name, points, &handler.db).await {
+        Ok(update) => (points, update.new_points),
+        Err(e) => {
+            error!("Failed to record points for Dink clog: {:?}", e);
+            (points, 0)
+        }
     }
-
-    points
 }
-async fn dink_drop(handler: &Extension<DinkHandler>, item_id: i32, name: String, value: i64, discord_id: String) {
+/// Records a Dink drop and increments total_drops (which the previous raw-SQL version never
+/// touched, unlike the /drop command - /stats and /leaderboard both read it directly), then
+/// awards points through `rank_manager::add_points` (see dink_clog for why).
+/// Returns the user's new points total.
+async fn dink_drop(handler: &DinkHandler, item_id: i32, name: String, value: i64, discord_id: String, user_name: &str) -> i64 {
+    // Ensure the user row exists before total_drops is touched directly below
+    let _ = sqlx::query!(
+        "INSERT INTO users (discord_id, points, total_drops)
+         VALUES (?, 0, 0)
+         ON CONFLICT(discord_id) DO NOTHING",
+        discord_id
+    )
+    .execute(&handler.db)
+    .await;
 
-    // Record the collection log entry
+    // Record the drop
     let _ = sqlx::query!(
         "INSERT INTO drops (discord_id, item_name, value, item_id) VALUES (?, ?, ?, ?)",
         discord_id,
@@ -515,22 +553,26 @@ async fn dink_drop(handler: &Extension<DinkHandler>, item_id: i32, name: String,
     .execute(&handler.db)
     .await;
 
-    let points = value / 100_000;
-
-    // Update user points
     let _ = sqlx::query!(
-        "UPDATE users 
-        SET points = points + ?
+        "UPDATE users
+        SET total_drops = total_drops + 1
         WHERE discord_id = ?",
-        points,
         discord_id
     )
     .execute(&handler.db)
     .await;
 
+    let points = value / 100_000;
+    match rank_manager::add_points(&handler.ctx, &discord_id, user_name, points, &handler.db).await {
+        Ok(update) => update.new_points,
+        Err(e) => {
+            error!("Failed to record points for Dink drop: {:?}", e);
+            0
+        }
+    }
 }
 fn field_if_exists(embed: CreateEmbed, value: Option<String>, name: &str) -> CreateEmbed {
-    if value.is_some() { embed.field(name, value.unwrap(), true) } else { embed }
+    if let Some(value) = value { embed.field(name, value, true) } else { embed }
 }
 fn search_link(name: String) -> String {
     let link = format!("https://oldschool.runescape.wiki/w/Special:Search?search={}", name.clone().replace(" ", "%20"));
