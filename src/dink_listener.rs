@@ -194,11 +194,20 @@ async fn process_dink_event(dink_handler: DinkHandler, data: DinkPayload, dink_f
         if let Some(ref shot) = screenshot {
             embed = embed.image(format!("attachment://{}", shot.filename));
         }
-        let discord_member = identify_user(data.clone(), dink_handler.db.clone(), dink_handler.ctx.clone(), dink_handler.guild_id, config.runelite_channel_id).await;
-        if discord_member.is_some() && !data.seasonal_world {
+        let Some(member) = identify_user(data.clone(), dink_handler.db.clone(), dink_handler.ctx.clone(), dink_handler.guild_id, config.runelite_channel_id).await else {
             //If we can't find the user an account belongs to, they probably shouldn't be getting posted
-            //Also don't care about leagues (for now)
-            let member = discord_member.unwrap();
+            let _ = logger::log_generic(
+                &dink_handler.ctx,
+                &format!("UNKNOWN USER: Someone I couldn't find in the discord server tried to do something: RSN {} sent something with Dink of type {}", data.player_name, data.notif_type)
+            ).await;
+            return;
+        };
+        if data.seasonal_world {
+            //Don't care about leagues (for now)
+            debug!("Ignoring Dink event from seasonal/league world for {}", data.player_name);
+            return;
+        }
+        {
             let footer = CreateEmbedFooter::new(member.display_name())
             .icon_url(member.face());
             embed = embed.footer(footer);
@@ -406,13 +415,6 @@ async fn process_dink_event(dink_handler: DinkHandler, data: DinkPayload, dink_f
                     error!("Failed to send Dink notification: {:?}", why);
                 }
             }
-
-        }
-        else {
-            let _ = logger::log_generic(
-                &dink_handler.ctx,
-                &format!("UNKNOWN USER: Someone I couldn't find in the discord server tried to do something: RSN {} sent something with Dink of type {}", data.player_name, data.notif_type)
-            ).await;
         }
 }
 //This function is so if you want to change the formatting on everything, you can ("fix" makes the text blue)
