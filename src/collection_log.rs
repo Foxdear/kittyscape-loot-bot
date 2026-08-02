@@ -314,32 +314,35 @@ impl CollectionLogManager<> {
     pub async fn get_suggestions(&self, partial: &str) -> Vec<String> {
         let partial = partial.to_lowercase();
 
-        let mut query_suggestions = vec![];
-
         let query_results = sqlx::query!("SELECT item_name FROM collection_log_items WHERE item_name LIKE '%' || ? || '%' LIMIT 25", partial)
         .fetch_all(&self.db)
         .await;
 
-        for (i, result) in query_results.unwrap().into_iter().enumerate() {
-            query_suggestions.push(result.item_name);
+        match query_results {
+            Ok(rows) => rows.into_iter().map(|row| row.item_name).collect(),
+            Err(e) => {
+                error!("Failed to fetch collection log item suggestions: {}", e);
+                vec![]
+            }
         }
-
-        query_suggestions
     }
 
     pub async fn get_category_suggestions(&self, partial: &str) -> Vec<String> {
         let partial = partial.to_lowercase();
 
-        let mut query_suggestions = vec![];
-
         let query_results = sqlx::query!("SELECT category FROM category_table WHERE category LIKE '%' || ? || '%' LIMIT 25", partial)
         .fetch_all(&self.db)
         .await;
 
-        for (i, result) in query_results.unwrap().into_iter().enumerate() {
-            query_suggestions.push(result.category.unwrap());
+        match query_results {
+            // category is nullable in the schema even though nothing actually stores a null
+            // there in practice - filter_map instead of unwrap so a stray null just gets left
+            // out of the list rather than panicking the autocomplete request.
+            Ok(rows) => rows.into_iter().filter_map(|row| row.category).collect(),
+            Err(e) => {
+                error!("Failed to fetch collection log category suggestions: {}", e);
+                vec![]
+            }
         }
-
-        query_suggestions
     }
 } 
