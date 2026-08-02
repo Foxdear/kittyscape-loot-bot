@@ -446,16 +446,30 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
     //(the bug fixed in c17cd22), which this still needs to avoid.
     let username = data.player_name;
     let hash = data.dink_account_hash;
-    let user = match sqlx::query_as!(
-        LinkedAccount,
-        "SELECT id, discord_id, runescape_name, dink_hash FROM runescape_accounts WHERE dink_hash = ?",
-        hash
-    )
-    .fetch_one(&db)
-    .await
-    {
-        found @ Ok(_) => found,
-        Err(_) => sqlx::query_as!(
+    //dink_account_hash is a required field, but a player who's never run ::dinkhash may still
+    //send "" rather than omitting it. Treat that the same as "no hash on file" everywhere - if we
+    //matched on dink_hash = '' directly, every unconfigured player would collide with every other
+    //unconfigured player the moment either of them got a "" written to their row below.
+    let hash_opt: Option<String> = (!hash.is_empty()).then(|| hash.clone());
+    let user = match &hash_opt {
+        Some(h) => match sqlx::query_as!(
+            LinkedAccount,
+            "SELECT id, discord_id, runescape_name, dink_hash FROM runescape_accounts WHERE dink_hash = ?",
+            h
+        )
+        .fetch_one(&db)
+        .await
+        {
+            found @ Ok(_) => found,
+            Err(_) => sqlx::query_as!(
+                LinkedAccount,
+                "SELECT id, discord_id, runescape_name, dink_hash FROM runescape_accounts WHERE runescape_name = ? AND dink_hash IS NULL",
+                username
+            )
+            .fetch_one(&db)
+            .await,
+        },
+        None => sqlx::query_as!(
             LinkedAccount,
             "SELECT id, discord_id, runescape_name, dink_hash FROM runescape_accounts WHERE runescape_name = ? AND dink_hash IS NULL",
             username
@@ -466,12 +480,12 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
     //Did we find anyone
     if let Ok(user) = user {
         //Ok cool. Does all our info match?
-        if !(user.dink_hash == Some(hash.clone()) && user.runescape_name == username) {
+        if !(user.dink_hash == hash_opt && user.runescape_name == username) {
             //Either we don't have a hash yet, or the username got changed
             let _ = sqlx::query!("UPDATE runescape_accounts
             SET runescape_name = ?, dink_hash = ?
             WHERE id = ?",
-            username, hash, user.id)
+            username, hash_opt, user.id)
             .execute(&db).await;
         }
         let member_data = Member::convert(ctx, Some(guild_id), channel_id, &user.discord_id.as_str()).await;
@@ -502,12 +516,12 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
 
             // Link RS name to Discord ID
             let _ = sqlx::query!(
-                "INSERT INTO runescape_accounts (discord_id, runescape_name, dink_hash) 
+                "INSERT INTO runescape_accounts (discord_id, runescape_name, dink_hash)
                 VALUES (?, ?, ?)
                 ON CONFLICT(discord_id, runescape_name) DO NOTHING",
                 discord_id,
                 username,
-                hash
+                hash_opt
             )
             .execute(&db)
             .await;
