@@ -524,15 +524,14 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
     member
 }
 /// Records a Dink collection log entry and awards points (if any) through
-/// `rank_manager::add_points`, instead of a raw `UPDATE users`. That gets us three things for
-/// free: the `users` row is upserted before anything references it (a raw `UPDATE` on a
-/// nonexistent row is a silent no-op - the previous code assumed the row already existed, which
-/// isn't true for a brand-new user's first-ever event), rank-up/down notifications fire the same
-/// way they do for the /clog command, and the caller can show the real post-event points total
-/// instead of whatever was on hand before this event.
-/// collection_log_entries.discord_id also has a foreign key on users.discord_id (enforced - sqlx
-/// enables PRAGMA foreign_keys by default), so the upsert has to happen before that insert too,
-/// or it fails silently right along with the points update.
+/// `rank_manager::add_points`, instead of a raw `UPDATE users`. That gets us rank-up/down
+/// notifications firing the same way they do for the /clog command, and the caller can show the
+/// real post-event points total instead of whatever was on hand before this event.
+/// collection_log_entries.discord_id has a foreign key on users.discord_id (enforced - sqlx
+/// enables PRAGMA foreign_keys by default), so this relies on the `users` row already existing by
+/// the time it's called - `identify_user` guarantees that: either it matched an existing
+/// runescape_accounts row (which, by the same FK, couldn't exist without a users row) or it just
+/// upserted one itself on the auto-link path.
 /// Returns (points awarded, user's new points total).
 async fn dink_clog(handler: &DinkHandler, item_id: i64, name: String, discord_id: String, user_name: &str) -> (i64, i64) {
 
