@@ -322,10 +322,11 @@ async fn process_dink_event(dink_handler: DinkHandler, data: DinkPayload, dink_f
                     let mut valuable: Option<DinkItem> = None;
                     let mut best: i64 = 0;
                     for (_i, item) in items.iter().enumerate() {
-                        //The number might be low depending on the users RuneLite settings (shop sell price instead of GE price), so get more reliable numbers
-                        //Alternatively:
-                        //let price = item.price_each.max(dink_handler.price_manager.get_item_id_price(&item.id).await.unwrap_or(0i64));
-                        let price = dink_handler.price_manager.get_item_id_price(&item.id).await.unwrap_or(0);
+                        //The number might be low depending on the users RuneLite settings (shop sell price instead of GE price), so get more reliable numbers.
+                        //But if we don't have a live GE price for this item at all (unwrap_or(0)),
+                        //fall back to what Dink itself reported instead of treating it as worthless -
+                        //a missing/stale price shouldn't silently suppress an otherwise-valuable drop.
+                        let price = item.price_each.max(dink_handler.price_manager.get_item_id_price(&item.id).await.unwrap_or(0));
                         let value = item.quantity * price;
                         //Annoyingly even if an item is in the denylist, it's still sent if we get other drop data, just with DENYLIST criteria
                         if value >= 100_000 && value > best && !item.criteria.contains(&"DENYLIST".to_string()) {
