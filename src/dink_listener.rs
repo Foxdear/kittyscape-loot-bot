@@ -84,6 +84,16 @@ struct DinkFile {
     content: Bytes,
 }
 
+// identify_user looks a runescape_accounts row up two different ways (by hash, then by name)
+// that need to agree on a row type - naming it explicitly here is what lets query_as! do that,
+// since each query! call site otherwise gets its own anonymous struct type.
+struct LinkedAccount {
+    id: i64,
+    discord_id: String,
+    runescape_name: String,
+    dink_hash: Option<String>,
+}
+
 pub async fn dink_handler(Extension(handler): Extension<DinkHandler>, Path(token): Path<String>, req: Request) -> Response {
     // The token is the only thing gating this endpoint - Dink can't send custom headers, so it
     // has to live in the URL path itself. Distribute it only via the hosted, importable Dink
@@ -427,15 +437,31 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
     let mut member: Option<Member> = None;
 
     //Okay who are we dealing with here
-    //Check username and hash (if we can't find one we'll find the other)
-    //If a hash exists, check that it matches, otherwise it's fine if it's null
+    //dink_hash is stable across in-game renames (that's the whole reason it exists - see
+    //https://github.com/sariyamelody/kittyscape-loot-bot/issues/10), so check that first: it finds
+    //a renamed player's existing row without needing anything else. Only fall back to matching by
+    //name, and only onto a row with no hash on file yet - matching *any* row by name here would let
+    //a new player who claims an old, renamed-away-from name silently take over that old account
+    //(the bug fixed in c17cd22), which this still needs to avoid.
     let username = data.player_name;
     let hash = data.dink_account_hash;
-    let user = sqlx::query!("SELECT * FROM runescape_accounts 
-    WHERE runescape_name = ? AND (dink_hash IS NULL OR dink_hash = ?)",
-    username, hash)
+    let user = match sqlx::query_as!(
+        LinkedAccount,
+        "SELECT id, discord_id, runescape_name, dink_hash FROM runescape_accounts WHERE dink_hash = ?",
+        hash
+    )
     .fetch_one(&db)
-    .await;
+    .await
+    {
+        found @ Ok(_) => found,
+        Err(_) => sqlx::query_as!(
+            LinkedAccount,
+            "SELECT id, discord_id, runescape_name, dink_hash FROM runescape_accounts WHERE runescape_name = ? AND dink_hash IS NULL",
+            username
+        )
+        .fetch_one(&db)
+        .await,
+    };
     //Did we find anyone
     if let Ok(user) = user {
         //Ok cool. Does all our info match?
