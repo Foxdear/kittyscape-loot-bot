@@ -84,6 +84,16 @@ struct DinkFile {
     content: Bytes,
 }
 
+// identify_user looks a runescape_accounts row up two different ways (by hash, then by name)
+// that need to agree on a row type - naming it explicitly here is what lets query_as! do that,
+// since each query! call site otherwise gets its own anonymous struct type.
+struct LinkedAccount {
+    id: i64,
+    discord_id: String,
+    runescape_name: String,
+    dink_hash: Option<String>,
+}
+
 pub async fn dink_handler(Extension(handler): Extension<DinkHandler>, Path(token): Path<String>, req: Request) -> Response {
     // The token is the only thing gating this endpoint - Dink can't send custom headers, so it
     // has to live in the URL path itself. Distribute it only via the hosted, importable Dink
@@ -312,10 +322,11 @@ async fn process_dink_event(dink_handler: DinkHandler, data: DinkPayload, dink_f
                     let mut valuable: Option<DinkItem> = None;
                     let mut best: i64 = 0;
                     for (_i, item) in items.iter().enumerate() {
-                        //The number might be low depending on the users RuneLite settings (shop sell price instead of GE price), so get more reliable numbers
-                        //Alternatively:
-                        //let price = item.price_each.max(dink_handler.price_manager.get_item_id_price(&item.id).await.unwrap_or(0i64));
-                        let price = dink_handler.price_manager.get_item_id_price(&item.id).await.unwrap_or(0);
+                        //The number might be low depending on the users RuneLite settings (shop sell price instead of GE price), so get more reliable numbers.
+                        //But if we don't have a live GE price for this item at all (unwrap_or(0)),
+                        //fall back to what Dink itself reported instead of treating it as worthless -
+                        //a missing/stale price shouldn't silently suppress an otherwise-valuable drop.
+                        let price = item.price_each.max(dink_handler.price_manager.get_item_id_price(&item.id).await.unwrap_or(0));
                         let value = item.quantity * price;
                         //Annoyingly even if an item is in the denylist, it's still sent if we get other drop data, just with DENYLIST criteria
                         if value >= 100_000 && value > best && !item.criteria.contains(&"DENYLIST".to_string()) {
@@ -427,24 +438,54 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
     let mut member: Option<Member> = None;
 
     //Okay who are we dealing with here
-    //Check username and hash (if we can't find one we'll find the other)
-    //If a hash exists, check that it matches, otherwise it's fine if it's null
+    //dink_hash is stable across in-game renames (that's the whole reason it exists - see
+    //https://github.com/sariyamelody/kittyscape-loot-bot/issues/10), so check that first: it finds
+    //a renamed player's existing row without needing anything else. Only fall back to matching by
+    //name, and only onto a row with no hash on file yet - matching *any* row by name here would let
+    //a new player who claims an old, renamed-away-from name silently take over that old account
+    //(the bug fixed in c17cd22), which this still needs to avoid.
     let username = data.player_name;
     let hash = data.dink_account_hash;
-    let user = sqlx::query!("SELECT * FROM runescape_accounts 
-    WHERE runescape_name = ? AND (dink_hash IS NULL OR dink_hash = ?)",
-    username, hash)
-    .fetch_one(&db)
-    .await;
+    //dink_account_hash is a required field, but a player who's never run ::dinkhash may still
+    //send "" rather than omitting it. Treat that the same as "no hash on file" everywhere - if we
+    //matched on dink_hash = '' directly, every unconfigured player would collide with every other
+    //unconfigured player the moment either of them got a "" written to their row below.
+    let hash_opt: Option<String> = (!hash.is_empty()).then(|| hash.clone());
+    let user = match &hash_opt {
+        Some(h) => match sqlx::query_as!(
+            LinkedAccount,
+            "SELECT id, discord_id, runescape_name, dink_hash FROM runescape_accounts WHERE dink_hash = ?",
+            h
+        )
+        .fetch_one(&db)
+        .await
+        {
+            found @ Ok(_) => found,
+            Err(_) => sqlx::query_as!(
+                LinkedAccount,
+                "SELECT id, discord_id, runescape_name, dink_hash FROM runescape_accounts WHERE runescape_name = ? AND dink_hash IS NULL",
+                username
+            )
+            .fetch_one(&db)
+            .await,
+        },
+        None => sqlx::query_as!(
+            LinkedAccount,
+            "SELECT id, discord_id, runescape_name, dink_hash FROM runescape_accounts WHERE runescape_name = ? AND dink_hash IS NULL",
+            username
+        )
+        .fetch_one(&db)
+        .await,
+    };
     //Did we find anyone
     if let Ok(user) = user {
         //Ok cool. Does all our info match?
-        if !(user.dink_hash == Some(hash.clone()) && user.runescape_name == username) {
+        if !(user.dink_hash == hash_opt && user.runescape_name == username) {
             //Either we don't have a hash yet, or the username got changed
             let _ = sqlx::query!("UPDATE runescape_accounts
             SET runescape_name = ?, dink_hash = ?
             WHERE id = ?",
-            username, hash, user.id)
+            username, hash_opt, user.id)
             .execute(&db).await;
         }
         let member_data = Member::convert(ctx, Some(guild_id), channel_id, &user.discord_id.as_str()).await;
@@ -475,12 +516,12 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
 
             // Link RS name to Discord ID
             let _ = sqlx::query!(
-                "INSERT INTO runescape_accounts (discord_id, runescape_name, dink_hash) 
+                "INSERT INTO runescape_accounts (discord_id, runescape_name, dink_hash)
                 VALUES (?, ?, ?)
                 ON CONFLICT(discord_id, runescape_name) DO NOTHING",
                 discord_id,
                 username,
-                hash
+                hash_opt
             )
             .execute(&db)
             .await;
@@ -497,15 +538,14 @@ async fn identify_user (data: DinkPayload, db: SqlitePool, ctx: Context, guild_i
     member
 }
 /// Records a Dink collection log entry and awards points (if any) through
-/// `rank_manager::add_points`, instead of a raw `UPDATE users`. That gets us three things for
-/// free: the `users` row is upserted before anything references it (a raw `UPDATE` on a
-/// nonexistent row is a silent no-op - the previous code assumed the row already existed, which
-/// isn't true for a brand-new user's first-ever event), rank-up/down notifications fire the same
-/// way they do for the /clog command, and the caller can show the real post-event points total
-/// instead of whatever was on hand before this event.
-/// collection_log_entries.discord_id also has a foreign key on users.discord_id (enforced - sqlx
-/// enables PRAGMA foreign_keys by default), so the upsert has to happen before that insert too,
-/// or it fails silently right along with the points update.
+/// `rank_manager::add_points`, instead of a raw `UPDATE users`. That gets us rank-up/down
+/// notifications firing the same way they do for the /clog command, and the caller can show the
+/// real post-event points total instead of whatever was on hand before this event.
+/// collection_log_entries.discord_id has a foreign key on users.discord_id (enforced - sqlx
+/// enables PRAGMA foreign_keys by default), so this relies on the `users` row already existing by
+/// the time it's called - `identify_user` guarantees that: either it matched an existing
+/// runescape_accounts row (which, by the same FK, couldn't exist without a users row) or it just
+/// upserted one itself on the auto-link path.
 /// Returns (points awarded, user's new points total).
 async fn dink_clog(handler: &DinkHandler, item_id: i64, name: String, discord_id: String, user_name: &str) -> (i64, i64) {
 
