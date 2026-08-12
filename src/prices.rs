@@ -76,7 +76,7 @@ impl PriceManager {
         Ok(manager)
     }
 
-    async fn fetch_mappings(client: &reqwest::Client) -> Result<HashMap<String, ItemMapping>> {
+    pub async fn fetch_mappings(client: &reqwest::Client) -> Result<HashMap<String, ItemMapping>> {
         let response = client
             .get("https://prices.runescape.wiki/api/v2/osrs/mapping")
             .send()
@@ -91,6 +91,12 @@ impl PriceManager {
 
         info!("Loaded {} items from mapping", mappings.len());
         Ok(mappings)
+    }
+
+    pub async fn update_mappings(&self) -> Result<()> {
+        let mut data = self.data.write().await;
+        data.mappings = Self::fetch_mappings(&self.client).await?;
+        Ok(())
     }
 
     pub async fn update_prices(&self) -> Result<()> {
@@ -115,12 +121,21 @@ impl PriceManager {
     }
 
     pub async fn start_price_updates(self: Arc<Self>) {
+        let self2 = self.clone();
         tokio::spawn(async move {
             loop {
                 if let Err(e) = self.update_prices().await {
                     error!("Failed to update prices: {}", e);
                 }
                 tokio::time::sleep(tokio::time::Duration::from_secs(600)).await;
+            }
+        });
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_hours(24)).await;
+                if let Err(e) = self2.update_mappings().await {
+                    error!("Failed to update mappings: {}", e);
+                }
             }
         });
     }
