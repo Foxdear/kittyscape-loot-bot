@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, discord_id, runescape_name, dink_hash FROM runescape_accounts WHERE runescape_name = ? AND dink_hash IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "discord_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "runescape_name",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "dink_hash",
+        "ordinal": 3,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "cb329a9712427e7912fc78eec6d9491b233a369a4276bed9b87d56981f827b35"
+}

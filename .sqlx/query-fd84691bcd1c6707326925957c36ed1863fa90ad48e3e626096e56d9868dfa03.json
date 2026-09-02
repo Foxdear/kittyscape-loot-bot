@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT item_name FROM collection_log_items WHERE item_name LIKE '%' || ? || '%' LIMIT 25",
+  "describe": {
+    "columns": [
+      {
+        "name": "item_name",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fd84691bcd1c6707326925957c36ed1863fa90ad48e3e626096e56d9868dfa03"
+}

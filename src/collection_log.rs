@@ -12,13 +12,8 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, query};
 const USER_AGENT: &str = "KittyScape Loot Bot/1.0";
 const WIKI_API_URL: &str = "https://oldschool.runescape.wiki/api.php";
 
-#[derive(Debug, Clone)]
-pub struct CollectionLogData {
-    pub completion_rates: HashMap<String, f64>,
-}
-
 pub struct CollectionLogItem {
-    pub item_id: f64,
+    pub item_id: i64,
     pub item_name: String,
     pub preferred_name: String,
     pub percentage: f64,
@@ -26,9 +21,7 @@ pub struct CollectionLogItem {
     //pub release_date: String,
 }
 
-
 pub struct CollectionLogManager<> {
-    data: Arc<RwLock<CollectionLogData>>,
     db: SqlitePool,
 }
 
@@ -41,31 +34,23 @@ impl CollectionLogManager<> {
         let completion_items: u64 = Self::fetch_completion_rates(&client, &db).await?;
         info!("CollectionLogManager initialized with {} items", completion_items);
 
-        let completion_data = sqlx::query!(
-            "SELECT item_name, percentage FROM collection_log_items",
-        )
-        .fetch_all(db)
-        .await?;
+        let loop_db = db.clone();
 
-        let mut completion_rates: HashMap<String, f64> = HashMap::new();
-
-        for comp_data_item in completion_data.iter() {
-            let item_name = comp_data_item.item_name.clone();
-            let percentage = comp_data_item.percentage.clone();
-            completion_rates.insert(item_name.unwrap(), percentage.unwrap().parse::<f64>().unwrap());
-        }
-
-        // Debug log some example items
-        for (name, rate) in completion_rates.iter().take(5) {
-            debug!("Example collection log item: {} - {}%", name, rate);
-        }
-
-        let data = CollectionLogData {
-            completion_rates,
-        };
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_hours(24)).await;
+                match Self::fetch_completion_rates(&client, &loop_db).await {
+                    Ok(clogs) => {
+                        info!("CollectionLogManager refreshed with {} items", clogs);
+                    }
+                    Err(e) => {
+                        error!("Failed to update clogs: {}", e);
+                    }
+                }
+            }
+        });
 
         Ok(Self {
-            data: Arc::new(RwLock::new(data)),
             db: db.clone(),
         })
     }
@@ -149,7 +134,7 @@ impl CollectionLogManager<> {
                 debug!("Processing row {}", i);
 
                 debug!("{:#?}", row.value());
-                let item_id = row.value().attr("data-item-id").unwrap().parse::<f64>().unwrap();
+                let item_id = row.value().attr("data-item-id").unwrap().parse::<i64>().unwrap();
                 
                 // Log the raw HTML of the row for debugging
                 debug!("Row HTML: {}", row.html());
@@ -267,8 +252,6 @@ impl CollectionLogManager<> {
     }
 
     pub async fn calculate_points(&self, item_name: &str) -> Option<i64> {
-        let data = self.data.read().await;
-        let completion_rate = data.completion_rates.get(item_name)?;
         let item_record = sqlx::query!(
             "SELECT * FROM v_item_data WHERE item_name LIKE '%' || ? || '%' ORDER BY item_id",
             item_name
@@ -277,8 +260,26 @@ impl CollectionLogManager<> {
         .await
         .ok()?;
         
+        Some(Self::points(item_record.percentage, item_record.whitelist, item_record.clamp).await?)
+    }
+
+    //For Dink we do this by item id instead because it's more reliable
+    pub async fn calculate_points_dink(&self, item_id: i64) -> Option<i64> {
+        let item_record = sqlx::query!(
+            "SELECT * FROM v_item_data WHERE item_id = ? ORDER BY item_id",
+            item_id
+        )
+        .fetch_one(&self.db)
+        .await
+        .ok()?;
+        
+        Some(Self::points(item_record.percentage, item_record.whitelist, item_record.clamp).await?)
+    }
+
+    pub async fn points(percentage: String, whitelist: i64, clamp: i32) -> Option<i64> {
+        let completion_rate = percentage.parse::<f64>().ok()?;
         // Multi-tiered point calculation
-        let points = if *completion_rate <= 5.0 {
+        let points = if completion_rate <= 5.0 {
             // Tier 3: Mega-rare items (≤5%)
             // 5% -> 500 points
             // 3% -> 1000 points
@@ -288,13 +289,13 @@ impl CollectionLogManager<> {
             let rarity_multiplier = (1.0 / completion_rate).powf(1.5) * 30.0;
             //Is the item in a clamped category, and not whitelisted?
             //Only checked here because the other percentage categories are nowhere near 3k
-            if item_record.whitelist == Some(0) && item_record.clamp > 0 {
+            if whitelist == 0 && clamp > 0 {
                 (base * rarity_multiplier).clamp(0.0, 3000.0)
             }
             else {
                 base * rarity_multiplier
             }
-        } else if *completion_rate <= 20.0 {
+        } else if completion_rate <= 20.0 {
             // Tier 2: Moderately rare items (5-20%)
             // Linear interpolation between:
             // 20% -> 200 points
@@ -311,30 +312,37 @@ impl CollectionLogManager<> {
     }
 
     pub async fn get_suggestions(&self, partial: &str) -> Vec<String> {
-        let data = self.data.read().await;
         let partial = partial.to_lowercase();
 
-        data.completion_rates
-            .keys()
-            .filter(|name| name.to_lowercase().contains(&partial))
-            .take(25)
-            .cloned()
-            .collect()
+        let query_results = sqlx::query!("SELECT item_name FROM collection_log_items WHERE item_name LIKE '%' || ? || '%' LIMIT 25", partial)
+        .fetch_all(&self.db)
+        .await;
+
+        match query_results {
+            Ok(rows) => rows.into_iter().map(|row| row.item_name).collect(),
+            Err(e) => {
+                error!("Failed to fetch collection log item suggestions: {}", e);
+                vec![]
+            }
+        }
     }
 
     pub async fn get_category_suggestions(&self, partial: &str) -> Vec<String> {
         let partial = partial.to_lowercase();
 
-        let mut query_suggestions = vec![];
-
         let query_results = sqlx::query!("SELECT category FROM category_table WHERE category LIKE '%' || ? || '%' LIMIT 25", partial)
         .fetch_all(&self.db)
         .await;
 
-        for (i, result) in query_results.unwrap().into_iter().enumerate() {
-            query_suggestions.push(result.category.unwrap());
+        match query_results {
+            // category is nullable in the schema even though nothing actually stores a null
+            // there in practice - filter_map instead of unwrap so a stray null just gets left
+            // out of the list rather than panicking the autocomplete request.
+            Ok(rows) => rows.into_iter().filter_map(|row| row.category).collect(),
+            Err(e) => {
+                error!("Failed to fetch collection log category suggestions: {}", e);
+                vec![]
+            }
         }
-
-        query_suggestions
     }
 } 

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE runescape_accounts\n            SET runescape_name = ?, dink_hash = ?\n            WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "9c224107d4e334201ca7b1a3788296402ddbb34525137838f17e92cbeea2e643"
+}

@@ -56,7 +56,7 @@ pub async fn handle_recalculate( //Big red button
     //Whitelists may have been removed or added, same reason
     //Only low completion percentage clogs are an issue, so we check all those (a clamp may have been removed instead of adding to whitelist)
     let item_records = sqlx::query!(
-        //I have to list every column to remove type inferrence issues ughhhhhhhhh
+        //I have to list every column to remove type inference issues ughhhhhhhhh
         "SELECT item_id, item_name, preferred_name, categories, percentage, highest_points as 'highest_points!: i64', whitelist, clog_count, clamp, clamped_category from v_item_data
         WHERE clog_count > 0 AND ((clamp = 1 AND highest_points > 3000)
         OR whitelist = 1 OR percentage < 10)
@@ -81,16 +81,16 @@ pub async fn handle_recalculate( //Big red button
         let mut clog_query_separated = clog_query.separated(", ");
         for (i, record) in item_records.iter().enumerate() {
 
-            clog_query_separated.push(format!("\"{}\"", record.item_name.clone().unwrap()));
+            clog_query_separated.push(format!("\"{}\"", record.item_name.clone()));
 
             let old_points: i64 = record.highest_points;
             item_vector.push(ItemData {
                 item_id: record.item_id,
-                item_name: record.item_name.clone().unwrap(),
-                percentage: record.percentage.clone().unwrap().parse::<f64>().unwrap(),
-                clamp: if record.clamp == 1 && record.whitelist == Some(0) { true } else { false },
+                item_name: record.item_name.clone(),
+                percentage: record.percentage.clone().parse::<f64>().unwrap(),
+                clamp: if record.clamp == 1 && record.whitelist == 0i64 { true } else { false },
                 old_points: old_points,
-                points: clog_manager.calculate_points(record.item_name.clone().unwrap().as_str()).await.unwrap(),
+                points: clog_manager.calculate_points(record.item_name.clone().as_str()).await.unwrap(),
                 affected: 0,
             }); 
         }

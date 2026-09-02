@@ -13,11 +13,11 @@ pub struct ItemMapping {
     pub id: i64,
     pub members: Option<bool>,
     #[serde(rename = "lowalch")]
-    pub low_alch: Option<i64>,
+    pub low_alch: Option<f64>,
     pub limit: Option<i64>,
     pub value: Option<i64>,
     #[serde(rename = "highalch")]
-    pub high_alch: Option<i64>,
+    pub high_alch: Option<f64>,
     pub icon: Option<String>,
     pub name: String,
 }
@@ -29,9 +29,9 @@ pub struct LatestPrices {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ItemPrice {
-    pub high: Option<i64>,
+    pub high: Option<f64>,
     pub high_time: Option<i64>,
-    pub low: Option<i64>,
+    pub low: Option<f64>,
     pub low_time: Option<i64>,
 }
 
@@ -76,9 +76,9 @@ impl PriceManager {
         Ok(manager)
     }
 
-    async fn fetch_mappings(client: &reqwest::Client) -> Result<HashMap<String, ItemMapping>> {
+    pub async fn fetch_mappings(client: &reqwest::Client) -> Result<HashMap<String, ItemMapping>> {
         let response = client
-            .get("https://prices.runescape.wiki/api/v1/osrs/mapping")
+            .get("https://prices.runescape.wiki/api/v2/osrs/mapping")
             .send()
             .await?
             .json::<Vec<ItemMapping>>()
@@ -93,9 +93,15 @@ impl PriceManager {
         Ok(mappings)
     }
 
+    pub async fn update_mappings(&self) -> Result<()> {
+        let mut data = self.data.write().await;
+        data.mappings = Self::fetch_mappings(&self.client).await?;
+        Ok(())
+    }
+
     pub async fn update_prices(&self) -> Result<()> {
         let response = self.client
-            .get("https://prices.runescape.wiki/api/v1/osrs/latest")
+            .get("https://prices.runescape.wiki/api/v2/osrs/latest")
             .send()
             .await?
             .json::<LatestPrices>()
@@ -115,12 +121,21 @@ impl PriceManager {
     }
 
     pub async fn start_price_updates(self: Arc<Self>) {
+        let self2 = self.clone();
         tokio::spawn(async move {
             loop {
                 if let Err(e) = self.update_prices().await {
                     error!("Failed to update prices: {}", e);
                 }
                 tokio::time::sleep(tokio::time::Duration::from_secs(600)).await;
+            }
+        });
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_hours(24)).await;
+                if let Err(e) = self2.update_mappings().await {
+                    error!("Failed to update mappings: {}", e);
+                }
             }
         });
     }
@@ -150,6 +165,19 @@ impl PriceManager {
         Some(price.low
             .or(price.high)
             .or(mapping.high_alch)
-            .unwrap_or(0))
+            .unwrap_or(0.0).round() as i64)
+    }
+
+    pub async fn get_item_id_price(&self, id: &i64) -> Option<i64> {
+        let data = self.data.read().await;
+        
+        // Get the latest price
+        let price = data.latest_prices.get(&id)?;
+        
+        // Use the lowest available price, defaulting to high alch value if available, or 0 if not
+        // Can't currently include high alch in this because it's behind the mapping
+        Some(price.low
+            .or(price.high)
+            .unwrap_or(0.0).round() as i64)
     }
 } 

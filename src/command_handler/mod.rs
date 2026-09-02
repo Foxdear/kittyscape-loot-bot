@@ -9,7 +9,7 @@ use crate::collection_log::CollectionLogManager;
 use std::sync::Arc;
 
 mod commands;
-mod utils;
+pub mod utils;
 
 pub use commands::*;
 pub use utils::*;

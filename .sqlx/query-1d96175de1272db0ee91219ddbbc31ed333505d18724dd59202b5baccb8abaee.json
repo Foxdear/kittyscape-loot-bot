@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO drops (discord_id, item_name, value, item_id) VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "1d96175de1272db0ee91219ddbbc31ed333505d18724dd59202b5baccb8abaee"
+}
