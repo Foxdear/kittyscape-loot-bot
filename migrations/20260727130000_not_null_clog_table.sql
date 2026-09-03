@@ -1,6 +1,26 @@
-PRAGMA foreign_keys=0;
 DROP VIEW IF EXISTS v_categories_clogs;
 DROP VIEW IF EXISTS v_item_data;
+
+-- SQLite ties foreign key enforcement to the underlying table object, not just its name, so
+-- dropping and recreating collection_log_items below fails at commit as soon as
+-- collection_log_entries has any rows referencing it - PRAGMA foreign_keys=0 is a no-op inside
+-- a transaction (which is how sqlx always runs migrations), and PRAGMA defer_foreign_keys
+-- doesn't cover a dropped-and-recreated parent table either. Dropping collection_log_entries'
+-- reference first (so nothing points at collection_log_items while it's swapped), then
+-- restoring it afterward, keeps foreign key enforcement satisfied throughout instead of
+-- depending on a pragma sqlx can't actually apply.
+CREATE TABLE new_collection_log_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    discord_id TEXT NOT NULL,
+    item_name TEXT NOT NULL,
+    points INTEGER NOT NULL,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, item_id INTEGER,
+    FOREIGN KEY(discord_id) REFERENCES users(discord_id)
+);
+INSERT INTO new_collection_log_entries SELECT * FROM collection_log_entries;
+DROP TABLE collection_log_entries;
+ALTER TABLE new_collection_log_entries RENAME TO collection_log_entries;
+
 --We could probably just drop the table altogether but this is "safest"
 CREATE TABLE "new_collection_log_items" (
 	"item_id"	INTEGER NOT NULL,
@@ -14,8 +34,20 @@ CREATE TABLE "new_collection_log_items" (
 INSERT INTO new_collection_log_items SELECT * FROM collection_log_items;
 DROP TABLE collection_log_items;
 ALTER TABLE new_collection_log_items RENAME TO collection_log_items;
+
+CREATE TABLE newer_collection_log_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    discord_id TEXT NOT NULL,
+    item_name TEXT NOT NULL,
+    points INTEGER NOT NULL,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, item_id INTEGER REFERENCES "collection_log_items"("item_id"),
+    FOREIGN KEY(discord_id) REFERENCES users(discord_id)
+);
+INSERT INTO newer_collection_log_entries SELECT * FROM collection_log_entries;
+DROP TABLE collection_log_entries;
+ALTER TABLE newer_collection_log_entries RENAME TO collection_log_entries;
+
 PRAGMA foreign_key_check;
-PRAGMA foreign_keys=1;
 
 --Create views (from earlier migration, needs to be redone with the table change)
 CREATE VIEW IF NOT EXISTS v_categories_clogs (item_id, category) AS WITH RECURSIVE split(id, value, rest) AS (
