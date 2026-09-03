@@ -8,6 +8,14 @@ on:
       - "v*"
   pull_request:
 
+# Two pushes to main close together (e.g. two PRs merged back-to-back) start two runs that
+# race to finish - without this, whichever happens to push its manifests *last* wins, which
+# isn't necessarily the newer commit. Scoping the group by ref and cancelling in-progress runs
+# means only the most-recently-triggered run for a given ref ever finishes and pushes tags.
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -42,6 +50,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Update Docker Hub description
         if: github.event_name != 'pull_request'
