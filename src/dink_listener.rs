@@ -341,12 +341,14 @@ async fn process_dink_event(dink_handler: DinkHandler, data: DinkPayload, dink_f
                         let price = item.price_each.max(dink_handler.price_manager.get_item_id_price(&item.id).await.unwrap_or(0));
                         let value = item.quantity * price;
                         //Annoyingly even if an item is in the denylist, it's still sent if we get other drop data, just with DENYLIST criteria
-                        if value >= 100_000 && value > best && !item.criteria.contains(&"DENYLIST".to_string()) {
+                        if value > best && !item.criteria.contains(&"DENYLIST".to_string()) {
                             valuable = Some(item.clone());
                             best = value;
                         }
                     }
-                    if let Some(item) = valuable {
+                    //Only count it if it meets our value threshold
+                    if best >= 100_000 {
+                        let item = valuable.unwrap();
                         //Now that we know it's valuable, we're okay to send
                         sendable = true;
                         let points = best / 100_000;
@@ -379,13 +381,14 @@ async fn process_dink_event(dink_handler: DinkHandler, data: DinkPayload, dink_f
                         ).await;
                     }
                     else {
-                        // Log the auto-added drop to the bot log channel
-                        let _ = crate::logger::log_action(
-                            &dink_handler.ctx,
-                            &discord_id,
-                            "DINK DROP (REJECTED)",
-                            &format!("{} tried to log some hot garbage", data.player_name)
-                        ).await;
+                        if let Some(item) = valuable {
+                            let _ = crate::logger::log_action(
+                                &dink_handler.ctx,
+                                &discord_id,
+                                "DINK DROP (REJECTED)",
+                                &format!("{} tried to log some hot garbage: Most valuable item was {}x {} worth {} GP", data.player_name, item.quantity, item.name, best)
+                            ).await;
+                        }
                     }
                 }
                 "PET" => {
